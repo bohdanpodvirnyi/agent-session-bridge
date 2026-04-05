@@ -18,7 +18,9 @@ function codexFallbackId(item: CodexRolloutItem): string {
 function codexItemTimestamp(item: CodexRolloutItem): string {
   return (
     ((item as { timestamp?: unknown }).timestamp as string | undefined) ??
-    (typeof item.payload.timestamp === "string" ? item.payload.timestamp : undefined) ??
+    (typeof item.payload.timestamp === "string"
+      ? item.payload.timestamp
+      : undefined) ??
     new Date(0).toISOString()
   );
 }
@@ -93,10 +95,15 @@ function stripCodexDirectiveLines(text: string): string {
     return !codexDirectiveLinePattern.test(trimmed);
   });
 
-  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return kept
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
-function stripImageWrapperText(content: NormalizedContent[]): NormalizedContent[] {
+function stripImageWrapperText(
+  content: NormalizedContent[],
+): NormalizedContent[] {
   return content.filter((item) => {
     if (item.type !== "text") {
       return true;
@@ -105,6 +112,11 @@ function stripImageWrapperText(content: NormalizedContent[]): NormalizedContent[
     const text = item.text.trim();
     return text !== "<image>" && text !== "</image>";
   });
+}
+
+function sanitizeClaudeToolIdentifier(value: string): string {
+  const sanitized = value.replace(/[^a-zA-Z0-9_-]+/g, "_");
+  return sanitized || "tool_use";
 }
 
 function normalizeContentItem(item: unknown): NormalizedContent[] {
@@ -379,8 +391,20 @@ export function convertClaudeLineToNormalized(
     role: role === "assistant" ? "assistant" : "user",
     timestamp: line.timestamp ?? new Date(0).toISOString(),
     content: normalizeContentList(line.message.content),
-    model:
-      typeof line.message.model === "string" ? line.message.model : undefined,
+    ...(role === "assistant"
+      ? {
+          provider: "anthropic",
+          model:
+            typeof line.message.model === "string"
+              ? line.message.model
+              : "claude-sonnet-4-20250514",
+        }
+      : {
+          model:
+            typeof line.message.model === "string"
+              ? line.message.model
+              : undefined,
+        }),
     stopReason:
       typeof line.message.stop_reason === "string"
         ? line.message.stop_reason
@@ -516,6 +540,41 @@ export function convertNormalizedToClaudeLine(
   parentUuid: string | null,
   cwd: string,
 ): ClaudeCodeLine {
+  const content: Record<string, unknown>[] = [];
+
+  for (const item of message.content) {
+    if (item.type === "text") {
+      content.push({ type: "text", text: item.text });
+      continue;
+    }
+    if (item.type === "thinking") {
+      const thinking = item.thinking.trim();
+      if (thinking) {
+        content.push({ type: "thinking", thinking, signature: "" });
+      }
+      continue;
+    }
+    if (item.type === "tool_call") {
+      content.push({
+        type: "tool_use",
+        id: sanitizeClaudeToolIdentifier(item.id),
+        name: item.name,
+        input: item.arguments,
+      });
+      continue;
+    }
+    if (item.type === "tool_result") {
+      content.push({
+        type: "tool_result",
+        tool_use_id: sanitizeClaudeToolIdentifier(item.toolCallId),
+        content: item.output,
+        is_error: Boolean(item.isError),
+      });
+      continue;
+    }
+    content.push({ type: "image", data: item.data, mimeType: item.mimeType });
+  }
+
   return {
     type: message.role === "assistant" ? "assistant" : "user",
     uuid: message.id,
@@ -525,31 +584,7 @@ export function convertNormalizedToClaudeLine(
     timestamp: message.timestamp,
     message: {
       role: message.role === "tool" ? "user" : message.role,
-      content: message.content.map((item) => {
-        if (item.type === "text") {
-          return { type: "text", text: item.text };
-        }
-        if (item.type === "thinking") {
-          return { type: "thinking", thinking: item.thinking, signature: "" };
-        }
-        if (item.type === "tool_call") {
-          return {
-            type: "tool_use",
-            id: item.id,
-            name: item.name,
-            input: item.arguments,
-          };
-        }
-        if (item.type === "tool_result") {
-          return {
-            type: "tool_result",
-            tool_use_id: item.toolCallId,
-            content: item.output,
-            is_error: Boolean(item.isError),
-          };
-        }
-        return { type: "image", data: item.data, mimeType: item.mimeType };
-      }),
+      content,
       model: message.model,
       stop_reason: message.stopReason,
       usage: message.usage,

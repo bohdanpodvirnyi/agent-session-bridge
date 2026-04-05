@@ -57,6 +57,24 @@ describe("converters", () => {
     });
   });
 
+  it("assigns Pi-safe defaults to Claude assistant metadata", () => {
+    const line: ClaudeCodeLine = {
+      type: "assistant",
+      uuid: "claude-defaults-1",
+      timestamp: "2026-04-05T10:00:00.000Z",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "hello" }],
+      },
+    };
+
+    expect(convertClaudeLineToNormalized(line)).toMatchObject({
+      role: "assistant",
+      provider: "anthropic",
+      model: "claude-sonnet-4-20250514",
+    });
+  });
+
   it("converts Codex items to the normalized model", () => {
     const item: CodexRolloutItem = {
       type: "response_item",
@@ -212,6 +230,64 @@ describe("converters", () => {
     expect(convertNormalizedToCodexItems(message)[0]?.type).toBe(
       "response_item",
     );
+  });
+
+  it("drops empty thinking blocks when converting to Claude lines", () => {
+    const message: NormalizedMessage = {
+      id: "message-empty-thinking",
+      role: "assistant",
+      timestamp: "2026-04-05T10:00:00.000Z",
+      content: [
+        { type: "thinking", thinking: "" },
+        { type: "text", text: "hello" },
+      ],
+    };
+
+    expect(
+      convertNormalizedToClaudeLine(message, "session-1", null, "/repo/demo")
+        .message?.content,
+    ).toEqual([{ type: "text", text: "hello" }]);
+  });
+
+  it("sanitizes Claude tool ids to Claude-safe characters", () => {
+    const message: NormalizedMessage = {
+      id: "message-tool-id",
+      role: "assistant",
+      timestamp: "2026-04-05T10:00:00.000Z",
+      content: [
+        {
+          type: "tool_call",
+          id: "call_XbzqLxjcBTgBSuUB3qpjvqyb|fc_0e209f2eb807a6640169c92e3acfa4819190f9938ded99277a",
+          name: "Bash",
+          arguments: { command: "pwd" },
+        },
+        {
+          type: "tool_result",
+          toolCallId:
+            "call_XbzqLxjcBTgBSuUB3qpjvqyb|fc_0e209f2eb807a6640169c92e3acfa4819190f9938ded99277a",
+          output: "ok",
+        },
+      ],
+    };
+
+    expect(
+      convertNormalizedToClaudeLine(message, "session-1", null, "/repo/demo")
+        .message?.content,
+    ).toEqual([
+      {
+        type: "tool_use",
+        id: "call_XbzqLxjcBTgBSuUB3qpjvqyb_fc_0e209f2eb807a6640169c92e3acfa4819190f9938ded99277a",
+        name: "Bash",
+        input: { command: "pwd" },
+      },
+      {
+        type: "tool_result",
+        tool_use_id:
+          "call_XbzqLxjcBTgBSuUB3qpjvqyb_fc_0e209f2eb807a6640169c92e3acfa4819190f9938ded99277a",
+        content: "ok",
+        is_error: false,
+      },
+    ]);
   });
 
   it("normalizes foreign usage objects before writing Pi entries", () => {
