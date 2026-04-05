@@ -1,0 +1,41 @@
+{
+  "name": "agent-session-bridge",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Bridge local AI coding sessions between Pi, Claude Code, and Codex.",
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "coding-agents",
+    "claude-code",
+    "codex",
+    "pi",
+    "session-portability",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.23.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "clean": "find packages -type d -name dist -prune -exec rm -rf {} +",
+    "fixture:validate": "vitest run packages/core/test/parsers.test.ts",
+    "lint": "eslint .",
+    "format": "prettier --check .",
+    "release:check": "pnpm lint && pnpm test && pnpm typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.31.0",
+    "@typescript-eslint/parser": "^8.31.0",
+    "@types/node": "^24.5.2",
+    "eslint": "^9.25.1",
+    "prettier": "^3.5.3",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

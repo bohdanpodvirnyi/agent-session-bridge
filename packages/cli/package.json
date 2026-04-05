@@ -1,0 +1,22 @@
+{
+  "name": "agent-session-bridge-cli",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "CLI surface for setup, linking, repair, and audit in Agent Session Bridge.",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "agent-session-bridge": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "agent-session-bridge-core": "workspace:*"
+  }
+}

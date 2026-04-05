@@ -1,0 +1,19 @@
+{
+  "name": "agent-session-bridge-claude-code",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Claude Code integration package for Agent Session Bridge.",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "agent-session-bridge-core": "workspace:*"
+  }
+}

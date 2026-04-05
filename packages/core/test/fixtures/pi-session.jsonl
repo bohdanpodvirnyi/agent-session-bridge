@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"pi-session-1","timestamp":"2026-04-05T10:00:00.000Z","cwd":"/repo/demo"}
+{"type":"message","id":"aaaa1111","parentId":null,"timestamp":"2026-04-05T10:00:01.000Z","message":{"role":"user","content":"Fix auth"}}
+{"type":"message","id":"bbbb2222","parentId":"aaaa1111","timestamp":"2026-04-05T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Looking."},{"type":"toolCall","id":"tool_1","name":"read","arguments":{"file":"src/auth.ts"}}]}}
+{"type":"message","id":"cccc3333","parentId":"bbbb2222","timestamp":"2026-04-05T10:00:03.000Z","message":{"role":"toolResult","toolCallId":"tool_1","toolName":"read","content":[{"type":"text","text":"file contents"}],"isError":false}}

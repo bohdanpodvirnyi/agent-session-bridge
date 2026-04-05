@@ -1,0 +1,4 @@
+{"type":"session_meta","payload":{"id":"codex-session-1","cwd":"/repo/demo"}}
+{"type":"response_item","payload":{"id":"codex-user-1","type":"message","role":"user","timestamp":"2026-04-05T10:00:01.000Z","content":[{"type":"input_text","text":"Fix auth"}]}}
+{"type":"response_item","payload":{"id":"codex-assistant-1","type":"message","role":"assistant","timestamp":"2026-04-05T10:00:02.000Z","content":[{"type":"output_text","text":"Looking."},{"type":"function_call","call_id":"call_1","name":"read_file","arguments":{"path":"src/auth.ts"}}]}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","timestamp":"2026-04-05T10:00:03.000Z","output":"file contents"}}
