@@ -301,4 +301,94 @@ describe("runtime sync flows", () => {
       true,
     );
   });
+
+  it("keeps separate Codex sessions in the same project as separate Pi conversations", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const codexDir = join(homeDir, ".codex", "sessions", "2026", "04", "05");
+    const firstCodexPath = join(codexDir, "rollout-a.jsonl");
+    const secondCodexPath = join(codexDir, "rollout-b.jsonl");
+
+    await writeAdjustedFixture(
+      join(fixturesDir, "codex-rollout.jsonl"),
+      firstCodexPath,
+      projectDir,
+    );
+
+    const firstContent = await readFile(firstCodexPath, "utf8");
+    await writeFile(
+      secondCodexPath,
+      firstContent
+        .replaceAll("codex-session-1", "codex-session-2")
+        .replaceAll("codex-user-1", "codex-user-2")
+        .replaceAll("codex-assistant-1", "codex-assistant-2")
+        .replaceAll("2026-04-05T10:00:01.000Z", "2026-04-05T11:00:01.000Z")
+        .replaceAll("2026-04-05T10:00:02.000Z", "2026-04-05T11:00:02.000Z")
+        .replaceAll("2026-04-05T10:00:03.000Z", "2026-04-05T11:00:03.000Z")
+        .replaceAll("Fix auth", "Second auth issue")
+        .replaceAll("Looking.", "Checking second thread."),
+      "utf8",
+    );
+
+    const firstRun = await syncSourceSessionToTargets({
+      sourceTool: "codex",
+      sourcePath: firstCodexPath,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T10:05:00.000Z"),
+      targetTools: ["pi"],
+    });
+
+    const secondRun = await syncSourceSessionToTargets({
+      sourceTool: "codex",
+      sourcePath: secondCodexPath,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T11:05:00.000Z"),
+      targetTools: ["pi"],
+    });
+
+    expect(firstRun.conversation.bridgeSessionId).not.toBe(
+      secondRun.conversation.bridgeSessionId,
+    );
+    expect(firstRun.conversation.mirrors.pi?.sessionPath).not.toBe(
+      secondRun.conversation.mirrors.pi?.sessionPath,
+    );
+
+    const registry = await loadRegistry(registryPath, { readFile });
+    expect(registry.conversations).toHaveLength(2);
+
+    const firstPi = await readPiSession(firstRun.conversation.mirrors.pi!.sessionPath);
+    const secondPi = await readPiSession(
+      secondRun.conversation.mirrors.pi!.sessionPath,
+    );
+
+    expect(
+      firstPi.entries.some(
+        (entry) =>
+          entry.message?.role === "assistant" &&
+          Array.isArray(entry.message.content) &&
+          entry.message.content.some(
+            (item) =>
+              typeof item === "object" &&
+              item !== null &&
+              (item as { type?: string }).type === "text" &&
+              (item as { text?: string }).text === "Looking.",
+          ),
+      ),
+    ).toBe(true);
+    expect(
+      secondPi.entries.some(
+        (entry) =>
+          entry.message?.role === "assistant" &&
+          Array.isArray(entry.message.content) &&
+          entry.message.content.some(
+            (item) =>
+              typeof item === "object" &&
+              item !== null &&
+              (item as { type?: string }).type === "text" &&
+              (item as { text?: string }).text === "Checking second thread.",
+          ),
+      ),
+    ).toBe(true);
+  });
 });

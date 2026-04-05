@@ -67,6 +67,15 @@ export function findConversationByProjectKey(
   );
 }
 
+export function findConversationsByProjectKey(
+  registry: BridgeRegistry,
+  projectKey: string,
+): BridgeConversation[] {
+  return registry.conversations.filter(
+    (conversation) => conversation.projectKey === projectKey,
+  );
+}
+
 export function findConversationByBridgeSessionId(
   registry: BridgeRegistry,
   bridgeSessionId: string,

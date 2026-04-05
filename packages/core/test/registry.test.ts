@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   emptyRegistry,
+  findConversationsByProjectKey,
   findConversationByProjectKey,
   findConversationByNativeSession,
   loadRegistry,
@@ -102,6 +103,36 @@ describe("registry helpers", () => {
     expect(
       findConversationByNativeSession(registry, "pi", "pi-session-1"),
     ).toBeUndefined();
+  });
+
+  it("returns all conversations for a project key when multiple sessions exist", () => {
+    const registry: BridgeRegistry = {
+      version: 1,
+      conversations: [
+        {
+          bridgeSessionId: "bridge-1",
+          projectKey: "/repo/a",
+          canonicalCwd: "/repo/a",
+          createdAt: "2026-04-05T10:00:00.000Z",
+          updatedAt: "2026-04-05T10:00:00.000Z",
+          status: "active",
+          mirrors: {},
+          lastWrittenOffsets: [],
+        },
+        {
+          bridgeSessionId: "bridge-2",
+          projectKey: "/repo/a",
+          canonicalCwd: "/repo/a",
+          createdAt: "2026-04-05T11:00:00.000Z",
+          updatedAt: "2026-04-05T11:00:00.000Z",
+          status: "active",
+          mirrors: {},
+          lastWrittenOffsets: [],
+        },
+      ],
+    };
+
+    expect(findConversationsByProjectKey(registry, "/repo/a")).toHaveLength(2);
   });
 
   it("upserts a new conversation when the bridge id is missing", () => {

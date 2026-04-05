@@ -48,6 +48,88 @@ node packages/cli/dist/cli/src/index.js list
 node packages/cli/dist/cli/src/index.js audit
 ```
 
+## Configuration
+
+Bridge config lives at `~/.agent-session-bridge/config.json`.
+
+Fields:
+
+- `optIn`: master on/off switch for sync. If `false`, no project syncs.
+- `enabledProjects`: project allowlist. If this array is empty and `optIn` is `true`, all projects are enabled unless explicitly blocked.
+- `disabledProjects`: project denylist. These paths always win over `enabledProjects`.
+- `directions`: per-tool sync controls such as `codex->pi` or `claude->codex`.
+- `redactionPatterns`: regex patterns applied before content is mirrored into another tool's local store.
+
+Important behavior:
+
+- `setup` currently writes a project-scoped config for the current working directory.
+- If you want sync enabled everywhere, set `optIn` to `true` and leave `enabledProjects` empty.
+- If you want sync enabled only for specific projects, list them in `enabledProjects`.
+
+Global mode example:
+
+```json
+{
+  "optIn": true,
+  "enabledProjects": [],
+  "disabledProjects": [],
+  "directions": {
+    "pi->pi": false,
+    "pi->claude": true,
+    "pi->codex": true,
+    "claude->pi": true,
+    "claude->claude": false,
+    "claude->codex": true,
+    "codex->pi": true,
+    "codex->claude": true,
+    "codex->codex": false
+  },
+  "redactionPatterns": [
+    { "source": "sk-[a-z0-9]+", "flags": "giu" },
+    { "source": "api[_-]?key\\s*[:=]\\s*\\S+", "flags": "giu" }
+  ]
+}
+```
+
+Project allowlist example:
+
+```json
+{
+  "optIn": true,
+  "enabledProjects": [
+    "/Users/example/projects/app-one",
+    "/Users/example/projects/app-two"
+  ],
+  "disabledProjects": [],
+  "directions": {
+    "pi->pi": false,
+    "pi->claude": true,
+    "pi->codex": true,
+    "claude->pi": true,
+    "claude->claude": false,
+    "claude->codex": true,
+    "codex->pi": true,
+    "codex->claude": true,
+    "codex->codex": false
+  },
+  "redactionPatterns": [
+    { "source": "sk-[a-z0-9]+", "flags": "giu" },
+    { "source": "api[_-]?key\\s*[:=]\\s*\\S+", "flags": "giu" }
+  ]
+}
+```
+
+Direction keys:
+
+- `pi->claude`
+- `pi->codex`
+- `claude->pi`
+- `claude->codex`
+- `codex->pi`
+- `codex->claude`
+
+The `x->x` keys are present for completeness and should stay `false`.
+
 ## Development
 
 ```bash
@@ -67,5 +149,7 @@ pnpm exec prettier --check .
 ## Current Limitations
 
 - Real external-tool installation is still manual.
+- `setup` defaults to project-scoped enablement rather than global enablement.
+- Multiple independent chats in the same folder are not yet guaranteed to stay separated across every tool.
 - Some imported legacy Codex tool-call history can still emit orphan-output warnings during resume.
 - The repository is better described as "public alpha" than "finished product."

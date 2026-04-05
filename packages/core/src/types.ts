@@ -128,5 +128,5 @@ export interface NormalizedMessage {
   model?: string;
   provider?: string;
   stopReason?: string | null;
-  usage?: Record<string, number>;
+  usage?: Record<string, unknown>;
 }

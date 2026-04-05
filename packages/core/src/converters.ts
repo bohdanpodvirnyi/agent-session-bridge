@@ -23,6 +23,90 @@ function codexItemTimestamp(item: CodexRolloutItem): string {
   );
 }
 
+const codexBootstrapPrefixes = [
+  "<permissions instructions>",
+  "<app-context>",
+  "<collaboration_mode>",
+  "<apps_instructions>",
+  "<skills_instructions>",
+  "<plugins_instructions>",
+  "# AGENTS.md instructions for ",
+  "<environment_context>",
+  "<turn_aborted>",
+  "When you write or edit a git commit message, ensure the message ends with this trailer exactly once:",
+];
+
+const codexDirectiveLinePattern =
+  /^::(?:git-[a-z-]+|automation-update|code-comment|archive)\{[^]*\}$/;
+
+function unwrapStructuredText(text: string): string {
+  let current = text;
+
+  for (let depth = 0; depth < 4; depth += 1) {
+    try {
+      const parsed = JSON.parse(current) as Record<string, unknown>;
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        (parsed.type === "input_text" || parsed.type === "output_text") &&
+        typeof parsed.text === "string"
+      ) {
+        current = parsed.text;
+        continue;
+      }
+    } catch {
+      return current;
+    }
+
+    return current;
+  }
+
+  return current;
+}
+
+function isCodexBootstrapText(text: string): boolean {
+  const normalized = unwrapStructuredText(text).trimStart();
+  return codexBootstrapPrefixes.some((prefix) => normalized.startsWith(prefix));
+}
+
+function isCodexBootstrapMessage(message: NormalizedMessage): boolean {
+  if (message.role !== "user" || message.content.length === 0) {
+    return false;
+  }
+
+  return message.content.every(
+    (item) =>
+      item.type === "text" &&
+      typeof item.text === "string" &&
+      isCodexBootstrapText(item.text),
+  );
+}
+
+function stripCodexDirectiveLines(text: string): string {
+  const lines = text.split("\n");
+  const kept = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return true;
+    }
+
+    return !codexDirectiveLinePattern.test(trimmed);
+  });
+
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function stripImageWrapperText(content: NormalizedContent[]): NormalizedContent[] {
+  return content.filter((item) => {
+    if (item.type !== "text") {
+      return true;
+    }
+
+    const text = item.text.trim();
+    return text !== "<image>" && text !== "</image>";
+  });
+}
+
 function normalizeContentItem(item: unknown): NormalizedContent[] {
   if (typeof item === "string") {
     return [{ type: "text", text: item }];
@@ -35,11 +119,24 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
   const candidate = item as Record<string, unknown>;
 
   if (candidate.type === "text" && typeof candidate.text === "string") {
-    return [{ type: "text", text: candidate.text }];
+    const sanitized = stripCodexDirectiveLines(candidate.text);
+    return sanitized ? [{ type: "text", text: sanitized }] : [];
+  }
+
+  if (
+    (candidate.type === "input_text" || candidate.type === "output_text") &&
+    typeof candidate.text === "string"
+  ) {
+    const sanitized = stripCodexDirectiveLines(candidate.text);
+    return sanitized ? [{ type: "text", text: sanitized }] : [];
   }
 
   if (candidate.type === "thinking" && typeof candidate.thinking === "string") {
     return [{ type: "thinking", thinking: candidate.thinking }];
+  }
+
+  if (candidate.type === "reasoning" && typeof candidate.text === "string") {
+    return [{ type: "thinking", thinking: candidate.text }];
   }
 
   if (
@@ -73,6 +170,21 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
   }
 
   if (
+    candidate.type === "function_call" &&
+    typeof candidate.call_id === "string" &&
+    typeof candidate.name === "string"
+  ) {
+    return [
+      {
+        type: "tool_call",
+        id: candidate.call_id,
+        name: candidate.name,
+        arguments: (candidate.arguments as Record<string, unknown>) ?? {},
+      },
+    ];
+  }
+
+  if (
     candidate.type === "tool_result" &&
     typeof candidate.tool_use_id === "string"
   ) {
@@ -85,6 +197,22 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
             ? candidate.content
             : JSON.stringify(candidate.content),
         isError: Boolean(candidate.is_error),
+      },
+    ];
+  }
+
+  if (
+    candidate.type === "function_call_output" &&
+    typeof candidate.call_id === "string"
+  ) {
+    return [
+      {
+        type: "tool_result",
+        toolCallId: candidate.call_id,
+        output:
+          typeof candidate.output === "string"
+            ? candidate.output
+            : JSON.stringify(candidate.output),
       },
     ];
   }
@@ -102,15 +230,86 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
     ];
   }
 
+  if (candidate.type === "input_image") {
+    return [
+      {
+        type: "image",
+        data: String(candidate.data ?? ""),
+        mimeType:
+          typeof candidate.mimeType === "string"
+            ? candidate.mimeType
+            : undefined,
+      },
+    ];
+  }
+
   return [{ type: "text", text: JSON.stringify(candidate) }];
 }
 
 function normalizeContentList(content: unknown): NormalizedContent[] {
-  if (Array.isArray(content)) {
-    return content.flatMap((item) => normalizeContentItem(item));
+  const normalized = Array.isArray(content)
+    ? content.flatMap((item) => normalizeContentItem(item))
+    : normalizeContentItem(content);
+
+  return stripImageWrapperText(normalized);
+}
+
+function readUsageNumber(
+  usage: Record<string, unknown>,
+  ...keys: string[]
+): number {
+  for (const key of keys) {
+    const value = usage[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
   }
 
-  return normalizeContentItem(content);
+  return 0;
+}
+
+function normalizePiUsage(
+  usage: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const source = usage ?? {};
+
+  const input = readUsageNumber(source, "input", "input_tokens");
+  const output = readUsageNumber(source, "output", "output_tokens");
+  const cacheRead = readUsageNumber(
+    source,
+    "cacheRead",
+    "cache_read_input_tokens",
+  );
+  const cacheWrite = readUsageNumber(
+    source,
+    "cacheWrite",
+    "cache_creation_input_tokens",
+  );
+  const totalTokens =
+    readUsageNumber(source, "totalTokens", "total_tokens") ||
+    input + output + cacheRead + cacheWrite;
+
+  const costCandidate =
+    typeof source.cost === "object" && source.cost !== null
+      ? (source.cost as Record<string, unknown>)
+      : {};
+  const cost = {
+    input: readUsageNumber(costCandidate, "input"),
+    output: readUsageNumber(costCandidate, "output"),
+    cacheRead: readUsageNumber(costCandidate, "cacheRead"),
+    cacheWrite: readUsageNumber(costCandidate, "cacheWrite"),
+    total: readUsageNumber(costCandidate, "total"),
+  };
+
+  return {
+    ...source,
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    totalTokens,
+    cost,
+  };
 }
 
 export function convertPiEntryToNormalized(
@@ -157,7 +356,7 @@ export function convertPiEntryToNormalized(
       typeof message.stopReason === "string" ? message.stopReason : undefined,
     usage:
       typeof message.usage === "object" && message.usage
-        ? (message.usage as Record<string, number>)
+        ? (message.usage as Record<string, unknown>)
         : undefined,
   };
 }
@@ -188,7 +387,7 @@ export function convertClaudeLineToNormalized(
         : undefined,
     usage:
       typeof line.message.usage === "object" && line.message.usage
-        ? (line.message.usage as Record<string, number>)
+        ? (line.message.usage as Record<string, unknown>)
         : undefined,
   };
 }
@@ -197,15 +396,28 @@ export function convertCodexItemToNormalized(
   item: CodexRolloutItem,
 ): NormalizedMessage | null {
   if (item.type === "response_item" && item.payload.type === "message") {
-    return {
+    const role = item.payload.role === "assistant" ? "assistant" : "user";
+    const normalized: NormalizedMessage = {
       id:
         typeof item.payload.id === "string"
           ? item.payload.id
           : `codex-${codexFallbackId(item)}`,
-      role: item.payload.role === "assistant" ? "assistant" : "user",
+      role,
       timestamp: codexItemTimestamp(item),
       content: normalizeContentList(item.payload.content),
+      ...(role === "assistant"
+        ? {
+            provider: "openai-codex",
+            model: "gpt-5.4",
+          }
+        : {}),
     };
+
+    if (isCodexBootstrapMessage(normalized)) {
+      return null;
+    }
+
+    return normalized;
   }
 
   if (
@@ -290,7 +502,10 @@ export function convertNormalizedToPiEntry(
       model: message.model,
       provider: message.provider,
       stopReason: message.stopReason,
-      usage: message.usage,
+      usage:
+        message.role === "assistant"
+          ? normalizePiUsage(message.usage)
+          : message.usage,
     },
   };
 }

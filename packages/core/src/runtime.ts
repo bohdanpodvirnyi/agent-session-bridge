@@ -36,8 +36,8 @@ import {
 } from "./parsers.js";
 import {
   emptyRegistry,
+  findConversationsByProjectKey,
   findConversationByNativeSession,
-  findConversationByProjectKey,
   loadRegistry,
   saveRegistry,
   upsertConversation,
@@ -699,7 +699,6 @@ export async function syncSourceSessionToTargets(params: {
       params.sourceTool,
       snapshot.sourceSessionId,
     ) ??
-    findConversationByProjectKey(registry, projectKey) ??
     createConversation(
       projectKey,
       canonicalCwd,
@@ -1002,7 +1001,10 @@ export async function importLatestSessionToTarget(params: {
       }),
   });
   const registry = await loadRegistry(params.registryPath, { readFile });
-  const linkedConversation = findConversationByProjectKey(registry, projectKey);
+  const linkedConversations = findConversationsByProjectKey(registry, projectKey)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  const linkedConversation =
+    linkedConversations.length === 1 ? linkedConversations[0] : undefined;
   const candidates = await listForeignSessionCandidates(
     projectKey,
     params.homeDir,
