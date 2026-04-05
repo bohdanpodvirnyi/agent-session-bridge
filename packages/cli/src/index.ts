@@ -3,13 +3,18 @@
 import * as fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
   createDefaultConfig,
   findConversationByBridgeSessionId,
   findConversationByProjectKey,
+  getPiSessionDir,
   importLatestSessionToTarget,
+  isProjectEnabled,
   listForeignSessionCandidates,
+  loadBridgeConfig,
   loadRegistry,
   saveRegistry,
   serializeBridgeConfig,
@@ -26,6 +31,7 @@ export interface CliDeps {
   save(registry: BridgeRegistry): Promise<void>;
   stdout(line: string): void;
   cwd?: string;
+  repoRoot?: string;
   homeDir?: string;
   readFile?: typeof fs.readFile;
   writeFile?: typeof fs.writeFile;
@@ -78,6 +84,13 @@ function resolveConfigPath(homeDir: string): string {
   return join(homeDir, ".agent-session-bridge", "config.json");
 }
 
+function resolveHookStateDir(
+  homeDir: string,
+  tool: "claude-code" | "codex",
+): string {
+  return join(homeDir, ".agent-session-bridge", `${tool}-hooks`);
+}
+
 function parseTargetTools(argv: string[]): ToolName[] {
   const tool = readOption(argv, "--tool");
   if (tool === "pi" || tool === "claude" || tool === "codex") {
@@ -96,6 +109,134 @@ function uniqueBy<T>(items: T[], key: (item: T) => string): T[] {
     seen.add(value);
     return true;
   });
+}
+
+async function pathExists(
+  path: string,
+  deps: Pick<CliDeps, "lstat">,
+): Promise<boolean> {
+  const lstatImpl = deps.lstat ?? fs.lstat;
+  try {
+    await lstatImpl(path);
+    return true;
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function mergeEnabledProject(
+  config: BridgeConfig,
+  cwd: string,
+  globalMode: boolean,
+): BridgeConfig {
+  const normalizedEnabled = globalMode
+    ? []
+    : uniqueBy([...config.enabledProjects, cwd], (value) => value);
+  return {
+    ...config,
+    optIn: true,
+    enabledProjects: normalizedEnabled,
+    disabledProjects: config.disabledProjects.filter((value) => value !== cwd),
+    directions: {
+      ...config.directions,
+      "pi->claude": true,
+      "pi->codex": true,
+      "claude->pi": true,
+      "claude->codex": true,
+      "codex->pi": true,
+      "codex->claude": true,
+    },
+  };
+}
+
+async function loadExistingConfig(
+  homeDir: string,
+  deps: Pick<CliDeps, "readFile">,
+): Promise<BridgeConfig> {
+  return loadBridgeConfig(resolveConfigPath(homeDir), {
+    readFile: deps.readFile ?? fs.readFile,
+  });
+}
+
+async function saveBridgeConfig(
+  homeDir: string,
+  config: BridgeConfig,
+  deps: Pick<CliDeps, "writeFile" | "mkdir">,
+): Promise<string> {
+  const writeFileImpl = deps.writeFile ?? fs.writeFile;
+  const mkdirImpl = deps.mkdir ?? fs.mkdir;
+  const configPath = resolveConfigPath(homeDir);
+  await mkdirImpl(dirname(configPath), { recursive: true });
+  await writeFileImpl(
+    configPath,
+    `${JSON.stringify(serializeBridgeConfig(config), null, 2)}\n`,
+    "utf8",
+  );
+  return configPath;
+}
+
+function resolveRepoRoot(deps: CliDeps): string {
+  if (deps.repoRoot) {
+    return resolve(deps.repoRoot);
+  }
+  if (deps.cwd) {
+    return resolve(deps.cwd);
+  }
+  let current = dirname(fileURLToPath(import.meta.url));
+  while (true) {
+    if (
+      existsSync(join(current, "packages", "pi", "package.json")) &&
+      existsSync(join(current, "packages", "claude-code", "package.json")) &&
+      existsSync(join(current, "packages", "codex", "package.json"))
+    ) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return resolve(process.cwd());
+    }
+    current = parent;
+  }
+}
+
+function hookCommandExists(entries: unknown, command: string): boolean {
+  if (!Array.isArray(entries)) {
+    return false;
+  }
+  return entries.some((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      return false;
+    }
+    const hooks = Array.isArray((entry as { hooks?: unknown[] }).hooks)
+      ? ((entry as { hooks?: unknown[] }).hooks ?? [])
+      : [];
+    return hooks.some(
+      (hook) =>
+        typeof hook === "object" &&
+        hook !== null &&
+        (hook as { command?: unknown }).command === command,
+    );
+  });
+}
+
+async function readJsonFile<T>(
+  path: string,
+  deps: Pick<CliDeps, "readFile">,
+): Promise<T | null> {
+  const readFileImpl = deps.readFile ?? fs.readFile;
+  try {
+    return JSON.parse(await readFileImpl(path, "utf8")) as T;
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function ensureSymlink(
@@ -308,7 +449,9 @@ async function configurePiExtension(
   }
 
   const packages = Array.isArray(settings.packages)
-    ? settings.packages.filter((value): value is string => typeof value === "string")
+    ? settings.packages.filter(
+        (value): value is string => typeof value === "string",
+      )
     : [];
 
   if (!packages.includes(packageSource)) {
@@ -332,42 +475,499 @@ async function writeBridgeConfig(
   cwd: string,
   deps: Pick<CliDeps, "writeFile" | "mkdir">,
 ): Promise<string> {
-  const writeFileImpl = deps.writeFile ?? fs.writeFile;
-  const mkdirImpl = deps.mkdir ?? fs.mkdir;
-  const configPath = resolveConfigPath(homeDir);
-  const config: BridgeConfig = {
-    ...createDefaultConfig(),
-    optIn: true,
-    enabledProjects: uniqueBy([cwd], (value) => value),
-    directions: {
-      ...createDefaultConfig().directions,
-      "pi->claude": true,
-      "pi->codex": true,
-      "claude->pi": true,
-      "claude->codex": true,
-      "codex->pi": true,
-      "codex->claude": true,
-    },
+  return saveBridgeConfig(
+    homeDir,
+    mergeEnabledProject(createDefaultConfig(), cwd, false),
+    deps,
+  );
+}
+
+interface ToolHealth {
+  installed: boolean;
+  details: string;
+}
+
+interface HookRunState {
+  receivedAt?: string;
+  error?: string;
+}
+
+function formatHealthLine(label: string, ok: boolean, details: string): string {
+  return `${ok ? "OK" : "WARN"} ${label}: ${details}`;
+}
+
+async function readHookRunState(
+  homeDir: string,
+  tool: "claude-code" | "codex",
+  deps: Pick<CliDeps, "readFile">,
+): Promise<HookRunState> {
+  const stateDir = resolveHookStateDir(homeDir, tool);
+  const stop = await readJsonFile<{ receivedAt?: string }>(
+    join(stateDir, "stop.json"),
+    deps,
+  );
+  const error = await readJsonFile<{ error?: string }>(
+    join(stateDir, "stop.error.json"),
+    deps,
+  );
+  return {
+    receivedAt: stop?.receivedAt,
+    error: error?.error,
+  };
+}
+
+async function inspectPiInstall(
+  homeDir: string,
+  repoRoot: string,
+  deps: Pick<CliDeps, "readFile">,
+): Promise<ToolHealth> {
+  const settingsPath = join(homeDir, ".pi", "agent", "settings.json");
+  const settings = await readJsonFile<{ packages?: string[] }>(
+    settingsPath,
+    deps,
+  );
+  const expected = join(repoRoot, "packages", "pi");
+  const installed = Boolean(settings?.packages?.includes(expected));
+  return {
+    installed,
+    details: installed
+      ? `package registered in ${settingsPath}`
+      : `missing package registration in ${settingsPath}`,
+  };
+}
+
+async function inspectClaudeInstall(
+  homeDir: string,
+  repoRoot: string,
+  deps: Pick<CliDeps, "readFile">,
+): Promise<ToolHealth> {
+  const settingsPath = join(homeDir, ".claude", "settings.json");
+  const settings = await readJsonFile<Record<string, unknown>>(
+    settingsPath,
+    deps,
+  );
+  const hooks =
+    typeof settings?.hooks === "object" && settings?.hooks !== null
+      ? (settings.hooks as Record<string, unknown>)
+      : {};
+  const hookCliPath = join(
+    repoRoot,
+    "packages",
+    "claude-code",
+    "dist",
+    "claude-code",
+    "src",
+    "hook-cli.js",
+  );
+  const startInstalled = hookCommandExists(
+    hooks.SessionStart,
+    `node ${hookCliPath} session-start`,
+  );
+  const stopInstalled = hookCommandExists(
+    hooks.Stop,
+    `node ${hookCliPath} stop`,
+  );
+  return {
+    installed: startInstalled && stopInstalled,
+    details:
+      startInstalled && stopInstalled
+        ? `hooks registered in ${settingsPath}`
+        : `missing bridge hooks in ${settingsPath}`,
+  };
+}
+
+async function inspectCodexInstall(
+  homeDir: string,
+  repoRoot: string,
+  deps: Pick<CliDeps, "readFile">,
+): Promise<ToolHealth> {
+  const hooksPath = join(homeDir, ".codex", "hooks.json");
+  const hooksFile = await readJsonFile<Record<string, unknown>>(
+    hooksPath,
+    deps,
+  );
+  const hooks =
+    typeof hooksFile?.hooks === "object" && hooksFile?.hooks !== null
+      ? (hooksFile.hooks as Record<string, unknown>)
+      : {};
+  const hookCliPath = join(
+    repoRoot,
+    "packages",
+    "codex",
+    "dist",
+    "codex",
+    "src",
+    "hook-cli.js",
+  );
+  const startInstalled = hookCommandExists(
+    hooks.SessionStart,
+    `node ${hookCliPath} session-start`,
+  );
+  const stopInstalled = hookCommandExists(
+    hooks.Stop,
+    `node ${hookCliPath} stop`,
+  );
+  return {
+    installed: startInstalled && stopInstalled,
+    details:
+      startInstalled && stopInstalled
+        ? `hooks registered in ${hooksPath}`
+        : `missing bridge hooks in ${hooksPath}`,
+  };
+}
+
+function zeroUsageCost(): Record<string, unknown> {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 0,
+  };
+}
+
+function normalizeUsageValue(value: unknown): Record<string, unknown> {
+  const source =
+    typeof value === "object" && value !== null
+      ? (value as Record<string, unknown>)
+      : {};
+
+  const numberAt = (...keys: string[]): number => {
+    for (const key of keys) {
+      const candidate = source[key];
+      if (typeof candidate === "number" && Number.isFinite(candidate)) {
+        return candidate;
+      }
+    }
+    return 0;
   };
 
-  await mkdirImpl(dirname(configPath), { recursive: true });
-  await writeFileImpl(
-    configPath,
-    `${JSON.stringify(serializeBridgeConfig(config), null, 2)}\n`,
-    "utf8",
+  const costSource =
+    typeof source.cost === "object" && source.cost !== null
+      ? (source.cost as Record<string, unknown>)
+      : {};
+  const numberInCost = (key: string): number =>
+    typeof costSource[key] === "number" &&
+    Number.isFinite(costSource[key] as number)
+      ? (costSource[key] as number)
+      : 0;
+
+  const input = numberAt("input", "input_tokens");
+  const output = numberAt("output", "output_tokens");
+  const cacheRead = numberAt("cacheRead", "cache_read_input_tokens");
+  const cacheWrite = numberAt("cacheWrite", "cache_creation_input_tokens");
+  const totalTokens =
+    numberAt("totalTokens", "total_tokens") ||
+    input + output + cacheRead + cacheWrite;
+
+  return {
+    ...source,
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    totalTokens,
+    cost: {
+      ...zeroUsageCost(),
+      input: numberInCost("input"),
+      output: numberInCost("output"),
+      cacheRead: numberInCost("cacheRead"),
+      cacheWrite: numberInCost("cacheWrite"),
+      total: numberInCost("total"),
+    },
+  };
+}
+
+const directiveLinePattern =
+  /^::(?:git-[a-z-]+|automation-update|code-comment|archive)\{[^]*\}$/;
+
+function sanitizeTextBlock(text: string): string {
+  const stripped = text
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        return true;
+      }
+      return !directiveLinePattern.test(trimmed);
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  try {
+    const parsed = JSON.parse(stripped) as Record<string, unknown>;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      (parsed.type === "input_text" || parsed.type === "output_text") &&
+      typeof parsed.text === "string"
+    ) {
+      return parsed.text;
+    }
+  } catch {}
+
+  return stripped;
+}
+
+const metaPrefixes = [
+  "<permissions instructions>",
+  "<app-context>",
+  "<collaboration_mode>",
+  "<apps_instructions>",
+  "<skills_instructions>",
+  "<plugins_instructions>",
+  "# AGENTS.md instructions for ",
+  "<environment_context>",
+  "<turn_aborted>",
+  "When you write or edit a git commit message, ensure the message ends with this trailer exactly once:",
+];
+
+function sanitizeMessageContent(content: unknown): {
+  nextContent: unknown;
+  textParts: string[];
+  touched: boolean;
+} {
+  if (typeof content === "string") {
+    const sanitized = sanitizeTextBlock(content);
+    return {
+      nextContent: sanitized,
+      textParts: sanitized ? [sanitized] : [],
+      touched: sanitized !== content,
+    };
+  }
+
+  if (!Array.isArray(content)) {
+    return { nextContent: content, textParts: [], touched: false };
+  }
+
+  let touched = false;
+  const nextItems = content.flatMap((item) => {
+    if (typeof item !== "object" || item === null) {
+      return [item];
+    }
+    const record = item as Record<string, unknown>;
+    if (record.type === "text" && typeof record.text === "string") {
+      const raw = record.text;
+      if (raw.trim() === "<image>" || raw.trim() === "</image>") {
+        touched = true;
+        return [];
+      }
+      const sanitized = sanitizeTextBlock(raw);
+      if (!sanitized) {
+        touched = true;
+        return [];
+      }
+      if (sanitized !== raw) {
+        touched = true;
+      }
+      return [{ ...record, text: sanitized }];
+    }
+    return [item];
+  });
+
+  const textParts = nextItems.flatMap((item) =>
+    typeof item === "object" &&
+    item !== null &&
+    (item as { type?: unknown }).type === "text" &&
+    typeof (item as { text?: unknown }).text === "string"
+      ? [(item as { text: string }).text]
+      : [],
   );
-  return configPath;
+  return {
+    nextContent: nextItems,
+    textParts,
+    touched,
+  };
+}
+
+function isMetaTextParts(parts: string[]): boolean {
+  if (parts.length === 0) {
+    return false;
+  }
+  const joined = parts.join("\n").trimStart();
+  return metaPrefixes.some((prefix) => joined.startsWith(prefix));
+}
+
+async function repairPiSessionsForProject(
+  cwd: string,
+  homeDir: string,
+  deps: Pick<CliDeps, "readFile" | "writeFile" | "mkdir" | "lstat">,
+): Promise<{
+  filesTouched: number;
+  filesScanned: number;
+  entriesRemoved: number;
+  assistantEntriesPatched: number;
+}> {
+  const dir = getPiSessionDir(cwd, homeDir);
+  if (!(await pathExists(dir, deps))) {
+    return {
+      filesTouched: 0,
+      filesScanned: 0,
+      entriesRemoved: 0,
+      assistantEntriesPatched: 0,
+    };
+  }
+
+  const files = (await fs.readdir(dir))
+    .filter((name) => name.endsWith(".jsonl"))
+    .sort();
+  let filesTouched = 0;
+  let entriesRemoved = 0;
+  let assistantEntriesPatched = 0;
+
+  for (const name of files) {
+    const path = join(dir, name);
+    const raw = await (deps.readFile ?? fs.readFile)(path, "utf8");
+    const lines = raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    if (lines.length === 0) {
+      continue;
+    }
+    const [header, ...rest] = lines;
+    let fileTouched = false;
+    const sanitizedEntries = rest.map((entry) => {
+      if (entry.type !== "message") {
+        return entry;
+      }
+      const message =
+        typeof entry.message === "object" && entry.message !== null
+          ? ({ ...(entry.message as Record<string, unknown>) } satisfies Record<
+              string,
+              unknown
+            >)
+          : undefined;
+      if (!message) {
+        return entry;
+      }
+      const { nextContent, textParts, touched } = sanitizeMessageContent(
+        message.content,
+      );
+      if (touched) {
+        fileTouched = true;
+      }
+      const nextMessage: Record<string, unknown> = {
+        ...message,
+        content: nextContent,
+      };
+      const nextEntry: Record<string, unknown> = {
+        ...entry,
+        message: nextMessage,
+      };
+      if (message.role === "assistant") {
+        const nextUsage = normalizeUsageValue(message.usage);
+        if (JSON.stringify(nextUsage) !== JSON.stringify(message.usage ?? {})) {
+          assistantEntriesPatched += 1;
+          fileTouched = true;
+        }
+        nextEntry.message = {
+          ...(nextEntry.message as Record<string, unknown>),
+          usage: nextUsage,
+          provider:
+            typeof message.provider === "string"
+              ? message.provider
+              : "openai-codex",
+          model: typeof message.model === "string" ? message.model : "gpt-5.4",
+        };
+      }
+      return {
+        ...nextEntry,
+        __userTextParts: Array.isArray(textParts) ? textParts : [],
+      } as Record<string, unknown>;
+    });
+
+    let firstMeaningfulIndex = -1;
+    for (let index = 0; index < sanitizedEntries.length; index += 1) {
+      const entry = sanitizedEntries[index]!;
+      const message =
+        typeof entry.message === "object" && entry.message !== null
+          ? (entry.message as Record<string, unknown>)
+          : null;
+      if (message?.role !== "user") {
+        continue;
+      }
+      const parts = Array.isArray(entry.__userTextParts)
+        ? (entry.__userTextParts as string[])
+            .map((part) => part.trim())
+            .filter(Boolean)
+        : [];
+      if (parts.length > 0 && !isMetaTextParts(parts)) {
+        firstMeaningfulIndex = index;
+        break;
+      }
+    }
+
+    const keptEntries = sanitizedEntries.filter((entry, index) => {
+      const message =
+        typeof entry.message === "object" && entry.message !== null
+          ? (entry.message as Record<string, unknown>)
+          : null;
+      if (message?.role !== "user") {
+        return true;
+      }
+      const parts = Array.isArray(entry.__userTextParts)
+        ? (entry.__userTextParts as string[])
+            .map((part) => part.trim())
+            .filter(Boolean)
+        : [];
+      const beforeMeaningful =
+        firstMeaningfulIndex === -1 || index < firstMeaningfulIndex;
+      const metaOrEmpty = parts.length === 0 || isMetaTextParts(parts);
+      if (beforeMeaningful && metaOrEmpty) {
+        entriesRemoved += 1;
+        fileTouched = true;
+        return false;
+      }
+      return true;
+    });
+
+    let previousId: string | null = null;
+    for (const entry of keptEntries) {
+      delete entry.__userTextParts;
+      if (entry.type === "message") {
+        const nextParent = previousId;
+        if (entry.parentId !== nextParent) {
+          fileTouched = true;
+          entry.parentId = nextParent;
+        }
+        previousId = typeof entry.id === "string" ? entry.id : previousId;
+      }
+    }
+
+    if (!fileTouched) {
+      continue;
+    }
+
+    filesTouched += 1;
+    await (deps.mkdir ?? fs.mkdir)(dirname(path), { recursive: true });
+    await (deps.writeFile ?? fs.writeFile)(
+      path,
+      `${[header, ...keptEntries].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+      "utf8",
+    );
+  }
+
+  return {
+    filesTouched,
+    filesScanned: files.length,
+    entriesRemoved,
+    assistantEntriesPatched,
+  };
 }
 
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...restWithFlags] = argv;
   const rest = withoutFlags(restWithFlags);
   const dryRun = hasFlag(restWithFlags, "--dry-run");
+  const globalMode = hasFlag(restWithFlags, "--global");
   const importMode = hasFlag(restWithFlags, "--all") ? "--all" : "--latest";
   const registry = await deps.load();
   const homeDir = resolveHomeDir(deps);
   const cwd = resolveCwd(deps, restWithFlags);
-  const repoRoot = deps.cwd ? resolve(deps.cwd) : resolve(process.cwd());
+  const repoRoot = resolveRepoRoot(deps);
   const targetTools = parseTargetTools(restWithFlags);
 
   if (!command || command === "list") {
@@ -380,23 +980,147 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   }
 
   if (command === "setup") {
-    const actions = [
-      `config -> ${resolveConfigPath(homeDir)}`,
-      `claude -> ${join(homeDir, ".claude", "settings.json")}`,
-      `codex -> ${join(homeDir, ".codex", "hooks.json")}`,
-      `pi -> ${join(homeDir, ".pi", "agent", "settings.json")}`,
-    ];
-
+    const nextConfig = mergeEnabledProject(
+      await loadExistingConfig(homeDir, deps),
+      cwd,
+      globalMode,
+    );
     if (!dryRun) {
-      await writeBridgeConfig(homeDir, cwd, deps);
+      await saveBridgeConfig(homeDir, nextConfig, deps);
       await configureClaudeHooks(homeDir, repoRoot, deps);
       await configureCodexHooks(homeDir, repoRoot, deps);
       await configurePiExtension(homeDir, repoRoot, deps);
     }
 
     deps.stdout(
-      `setup complete${dryRun ? " (dry-run)" : ""}: ${actions.join(", ")}`,
+      `Agent Session Bridge setup ${dryRun ? "(dry-run) " : ""}complete.`,
     );
+    deps.stdout(`Project scope: ${globalMode ? "global" : cwd}`);
+    deps.stdout(`Config: ${resolveConfigPath(homeDir)}`);
+    deps.stdout(`Pi: ${join(homeDir, ".pi", "agent", "settings.json")}`);
+    deps.stdout(`Claude Code: ${join(homeDir, ".claude", "settings.json")}`);
+    deps.stdout(`Codex: ${join(homeDir, ".codex", "hooks.json")}`);
+    deps.stdout(
+      "Next steps: restart Pi, Claude Code, and Codex so they reload their integration settings.",
+    );
+    return 0;
+  }
+
+  if (command === "enable") {
+    const nextConfig = mergeEnabledProject(
+      await loadExistingConfig(homeDir, deps),
+      cwd,
+      globalMode,
+    );
+    if (!dryRun) {
+      await saveBridgeConfig(homeDir, nextConfig, deps);
+    }
+    deps.stdout(
+      `Bridge sync ${dryRun ? "would be enabled" : "enabled"} for ${
+        globalMode ? "all projects" : cwd
+      }.`,
+    );
+    deps.stdout(`Config: ${resolveConfigPath(homeDir)}`);
+    return 0;
+  }
+
+  if (command === "doctor") {
+    const config = await loadExistingConfig(homeDir, deps);
+    const pi = await inspectPiInstall(homeDir, repoRoot, deps);
+    const claude = await inspectClaudeInstall(homeDir, repoRoot, deps);
+    const codex = await inspectCodexInstall(homeDir, repoRoot, deps);
+    const claudeState = await readHookRunState(homeDir, "claude-code", deps);
+    const codexState = await readHookRunState(homeDir, "codex", deps);
+    const conversations = registry.conversations.filter(
+      (conversation) =>
+        conversation.projectKey === cwd || conversation.canonicalCwd === cwd,
+    );
+    const projectEnabled = isProjectEnabled(config, cwd);
+
+    deps.stdout(`Doctor report for ${cwd}`);
+    deps.stdout(
+      formatHealthLine(
+        "config",
+        config.optIn,
+        config.optIn ? "opt-in enabled" : "opt-in disabled",
+      ),
+    );
+    deps.stdout(
+      formatHealthLine(
+        "project",
+        projectEnabled,
+        projectEnabled
+          ? config.enabledProjects.length === 0
+            ? "sync enabled globally"
+            : "sync enabled for this project"
+          : "project not enabled for sync",
+      ),
+    );
+    deps.stdout(formatHealthLine("pi", pi.installed, pi.details));
+    deps.stdout(formatHealthLine("claude", claude.installed, claude.details));
+    deps.stdout(formatHealthLine("codex", codex.installed, codex.details));
+    deps.stdout(
+      formatHealthLine(
+        "claude sync",
+        Boolean(claudeState.receivedAt) && !claudeState.error,
+        claudeState.error
+          ? `last hook error: ${claudeState.error}`
+          : claudeState.receivedAt
+            ? `last stop hook: ${claudeState.receivedAt}`
+            : "no stop hook run recorded yet",
+      ),
+    );
+    deps.stdout(
+      formatHealthLine(
+        "codex sync",
+        Boolean(codexState.receivedAt) && !codexState.error,
+        codexState.error
+          ? `last hook error: ${codexState.error}`
+          : codexState.receivedAt
+            ? `last stop hook: ${codexState.receivedAt}`
+            : "no stop hook run recorded yet",
+      ),
+    );
+    deps.stdout(
+      `Registry: ${conversations.length} conversation${conversations.length === 1 ? "" : "s"} linked to this project.`,
+    );
+    return pi.installed && claude.installed && codex.installed && projectEnabled
+      ? 0
+      : 1;
+  }
+
+  if (command === "repair") {
+    const [bridgeSessionId] = rest;
+    let conversation = bridgeSessionId
+      ? findConversationByBridgeSessionId(registry, bridgeSessionId)
+      : undefined;
+    if (!conversation) {
+      conversation = findConversationByProjectKey(registry, cwd);
+    }
+
+    if (!dryRun) {
+      const summary = await repairPiSessionsForProject(cwd, homeDir, deps);
+      if (conversation) {
+        const updated = upsertConversation(
+          registry,
+          setRepairState(conversation, {
+            status: "idle",
+            reason:
+              summary.filesTouched > 0
+                ? `repaired ${summary.filesTouched} Pi session files`
+                : "repair scan found nothing to change",
+            updatedAt: new Date().toISOString(),
+          }),
+        );
+        await deps.save(updated);
+      }
+      deps.stdout(
+        `repair complete: scanned ${summary.filesScanned} Pi session files, touched ${summary.filesTouched}, removed ${summary.entriesRemoved} bad title entries, patched ${summary.assistantEntriesPatched} assistant messages`,
+      );
+      return 0;
+    }
+
+    deps.stdout(`repair would scan Pi sessions for ${cwd}`);
     return 0;
   }
 
@@ -478,34 +1202,6 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     return 0;
   }
 
-  if (command === "repair") {
-    const [bridgeSessionId] = rest;
-    const conversation = bridgeSessionId
-      ? findConversationByBridgeSessionId(registry, bridgeSessionId)
-      : undefined;
-
-    if (!conversation) {
-      deps.stdout("conversation not found");
-      return 1;
-    }
-
-    if (!dryRun) {
-      const updated = upsertConversation(
-        registry,
-        setRepairState(conversation, {
-          status: "running",
-          reason: "manual repair requested",
-          updatedAt: new Date().toISOString(),
-        }),
-      );
-      await deps.save(updated);
-    }
-    deps.stdout(
-      `repair queued for ${bridgeSessionId}${dryRun ? " (dry-run)" : ""}`,
-    );
-    return 0;
-  }
-
   if (command === "audit") {
     deps.stdout(JSON.stringify(registry, null, 2));
     return 0;
@@ -557,7 +1253,11 @@ async function main(): Promise<number> {
     },
   });
 }
+const isMain =
+  process.argv[1] != null && fileURLToPath(import.meta.url) === process.argv[1];
 
-main().then((code) => {
-  process.exitCode = code;
-});
+if (isMain) {
+  main().then((code) => {
+    process.exitCode = code;
+  });
+}

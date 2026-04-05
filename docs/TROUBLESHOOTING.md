@@ -3,11 +3,12 @@
 ## Sessions are duplicated
 
 - Run `agent-session-bridge audit` to inspect mirror mappings and watermarks.
-- Run `agent-session-bridge repair <bridgeSessionId>` to mark a conversation for reconciliation.
+- Run `agent-session-bridge repair --cwd /path/to/project` to clean imported Pi sessions for the current project.
 - Confirm the same project resolves to the same `projectKey` and is not opened through mismatched paths.
 
 ## Imported sessions do not appear where expected
 
+- Run `agent-session-bridge doctor --cwd /path/to/project` first.
 - Verify the target tool's native session directory exists.
 - Re-run `agent-session-bridge import --latest`.
 - Confirm the bridge registry links the expected native session ids.
@@ -20,5 +21,10 @@
 ## A hook fails during sync
 
 - Hook handlers are designed to fail open.
-- Inspect debug output with `agent-session-bridge audit`.
+- Inspect debug output with `agent-session-bridge audit` and `agent-session-bridge doctor`.
 - Re-run one-shot backfill if a mirror fell behind.
+
+## Pi resume titles look wrong
+
+- Run `agent-session-bridge repair --cwd /path/to/project`.
+- The repair command removes imported bootstrap/system prompts, strips raw Codex desktop directive lines like `::git-push{...}`, and re-chains Pi session parents when needed.

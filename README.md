@@ -29,7 +29,7 @@ The bridge is designed to:
 - `packages/codex`: Codex integration surface
 - `packages/daemon`: optional backfill and repair helpers
 
-## Local Install
+## Quick Start
 
 ```bash
 git clone <your-repo-url> agent-session-bridge
@@ -37,13 +37,29 @@ cd agent-session-bridge
 
 pnpm install
 pnpm build
-pnpm release:check
+node packages/cli/dist/cli/src/index.js setup
+node packages/cli/dist/cli/src/index.js doctor
 ```
+
+The friendly CLI flow is:
+
+```bash
+node packages/cli/dist/cli/src/index.js setup
+node packages/cli/dist/cli/src/index.js enable
+node packages/cli/dist/cli/src/index.js doctor
+node packages/cli/dist/cli/src/index.js repair
+```
+
+What these commands do:
+
+- `setup`: installs the Pi package registration, Claude Code hooks, Codex hooks, and writes bridge config for the current project
+- `enable`: enables sync for the current project without reinstalling integrations
+- `doctor`: shows whether Pi / Claude Code / Codex are wired correctly and whether hooks have run recently
+- `repair`: fixes imported Pi session issues such as bad titles, bridge/bootstrap junk, raw directive lines, and missing assistant usage fields
 
 Run the built CLI directly:
 
 ```bash
-node packages/cli/dist/cli/src/index.js setup
 node packages/cli/dist/cli/src/index.js list
 node packages/cli/dist/cli/src/index.js audit
 ```
@@ -62,9 +78,10 @@ Fields:
 
 Important behavior:
 
-- `setup` currently writes a project-scoped config for the current working directory.
-- If you want sync enabled everywhere, set `optIn` to `true` and leave `enabledProjects` empty.
-- If you want sync enabled only for specific projects, list them in `enabledProjects`.
+- `setup` enables sync for the current working directory by default.
+- `setup --global` or `enable --global` switches to global mode by leaving `enabledProjects` empty.
+- If `optIn` is `true` and `enabledProjects` is empty, all projects are enabled unless explicitly blocked.
+- If `enabledProjects` is non-empty, only those exact project paths will sync.
 
 Global mode example:
 
@@ -148,8 +165,7 @@ pnpm exec prettier --check .
 
 ## Current Limitations
 
-- Real external-tool installation is still manual.
-- `setup` defaults to project-scoped enablement rather than global enablement.
+- External-tool installation is now guided by `setup`, but still assumes local access to the cloned repo and built workspace packages.
 - Multiple independent chats in the same folder are not yet guaranteed to stay separated across every tool.
 - Some imported legacy Codex tool-call history can still emit orphan-output warnings during resume.
 - The repository is better described as "public alpha" than "finished product."

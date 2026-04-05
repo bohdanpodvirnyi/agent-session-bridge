@@ -1,3 +1,4 @@
+import { normalizePath } from "./path-utils.js";
 import type { ToolName } from "./types.js";
 
 export interface BridgeConfig {
@@ -43,16 +44,25 @@ export function isProjectEnabled(
   config: BridgeConfig,
   projectKey: string,
 ): boolean {
+  const normalizedProject = normalizePath(projectKey);
+  const matchesScope = (candidate: string): boolean => {
+    const normalizedCandidate = normalizePath(candidate);
+    return (
+      normalizedProject === normalizedCandidate ||
+      normalizedProject.startsWith(`${normalizedCandidate}/`)
+    );
+  };
+
   if (!config.optIn) {
     return false;
   }
-  if (config.disabledProjects.includes(projectKey)) {
+  if (config.disabledProjects.some(matchesScope)) {
     return false;
   }
   if (config.enabledProjects.length === 0) {
     return true;
   }
-  return config.enabledProjects.includes(projectKey);
+  return config.enabledProjects.some(matchesScope);
 }
 
 export function shouldSyncDirection(

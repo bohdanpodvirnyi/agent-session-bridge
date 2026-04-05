@@ -1,10 +1,14 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { describe, expect, it } from "vitest";
 
-import { loadRegistry, readClaudeCodeSession } from "agent-session-bridge-core";
+import {
+  getPiSessionDir,
+  loadRegistry,
+  readClaudeCodeSession,
+} from "agent-session-bridge-core";
 
 import { runCli } from "../src/index.js";
 
@@ -208,7 +212,7 @@ describe("CLI", () => {
     expect(
       await exists(join(homeDir, ".agent-session-bridge", "config.json")),
     ).toBe(true);
-    expect(lines[0]).toContain("setup complete");
+    expect(lines[0]).toContain("setup");
 
     const piSettings = JSON.parse(
       await readFile(join(homeDir, ".pi", "agent", "settings.json"), "utf8"),
@@ -312,5 +316,234 @@ describe("CLI", () => {
 
     expect(exitCode).toBe(0);
     expect(lines[0]).toContain("imported");
+  });
+
+  it("enables bridge sync for the current project without overwriting config", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const configDir = join(homeDir, ".agent-session-bridge");
+    const configPath = join(configDir, "config.json");
+    const lines: string[] = [];
+
+    await mkdir(configDir, { recursive: true });
+    await writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          optIn: true,
+          enabledProjects: ["/tmp/existing-project"],
+          disabledProjects: [],
+          directions: {
+            "pi->pi": false,
+            "pi->claude": true,
+            "pi->codex": false,
+            "claude->pi": true,
+            "claude->claude": false,
+            "claude->codex": false,
+            "codex->pi": false,
+            "codex->claude": false,
+            "codex->codex": false,
+          },
+          redactionPatterns: [{ source: "secret", flags: "g" }],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const exitCode = await runCli(["enable", "--cwd", projectDir], {
+      cwd: repoRoot,
+      homeDir,
+      readFile,
+      writeFile,
+      mkdir,
+      load: () =>
+        loadRegistry(registryPath, {
+          readFile,
+        }),
+      save: async () => {},
+      stdout(line) {
+        lines.push(line);
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(lines[0]).toContain("enabled");
+
+    const config = JSON.parse(await readFile(configPath, "utf8")) as {
+      optIn: boolean;
+      enabledProjects: string[];
+      directions: Record<string, boolean>;
+    };
+    expect(config.optIn).toBe(true);
+    expect(config.enabledProjects).toContain("/tmp/existing-project");
+    expect(config.enabledProjects).toContain(projectDir);
+    expect(config.directions["codex->pi"]).toBe(true);
+  });
+
+  it("reports installation and sync health in doctor", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const lines: string[] = [];
+
+    await runCli(["setup", "--cwd", projectDir], {
+      cwd: repoRoot,
+      homeDir,
+      readFile,
+      writeFile,
+      mkdir,
+      load: () =>
+        loadRegistry(registryPath, {
+          readFile,
+        }),
+      save: async () => {},
+      stdout() {},
+    });
+
+    await mkdir(join(homeDir, ".agent-session-bridge", "claude-code-hooks"), {
+      recursive: true,
+    });
+    await mkdir(join(homeDir, ".agent-session-bridge", "codex-hooks"), {
+      recursive: true,
+    });
+    await writeFile(
+      join(homeDir, ".agent-session-bridge", "claude-code-hooks", "stop.json"),
+      JSON.stringify({ receivedAt: "2026-04-05T12:00:00.000Z" }, null, 2),
+      "utf8",
+    );
+    await writeFile(
+      join(homeDir, ".agent-session-bridge", "codex-hooks", "stop.json"),
+      JSON.stringify({ receivedAt: "2026-04-05T12:05:00.000Z" }, null, 2),
+      "utf8",
+    );
+
+    const exitCode = await runCli(["doctor", "--cwd", projectDir], {
+      cwd: repoRoot,
+      homeDir,
+      readFile,
+      writeFile,
+      mkdir,
+      load: () =>
+        loadRegistry(registryPath, {
+          readFile,
+        }),
+      save: async () => {},
+      stdout(line) {
+        lines.push(line);
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(lines.join("\n")).toContain("OK pi:");
+    expect(lines.join("\n")).toContain("OK claude:");
+    expect(lines.join("\n")).toContain("OK codex:");
+    expect(lines.join("\n")).toContain(
+      "last stop hook: 2026-04-05T12:05:00.000Z",
+    );
+  });
+
+  it("repairs imported Pi sessions for the current project", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const lines: string[] = [];
+    const piDir = getPiSessionDir(projectDir, homeDir);
+    const piSessionPath = join(piDir, "broken.jsonl");
+
+    await mkdir(piDir, { recursive: true });
+    await writeFile(
+      piSessionPath,
+      [
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "pi-broken",
+          timestamp: "2026-04-05T10:00:00.000Z",
+          cwd: projectDir,
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "m1",
+          parentId: null,
+          timestamp: "2026-04-05T10:00:01.000Z",
+          message: {
+            role: "user",
+            content: [
+              { type: "text", text: "<permissions instructions>" },
+              {
+                type: "text",
+                text: "Filesystem sandboxing defines which files can be read or written.",
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "m2",
+          parentId: "m1",
+          timestamp: "2026-04-05T10:00:02.000Z",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: 'Staging file.\n\n::git-stage{cwd="/repo/demo"}\n\nPushed.',
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "m3",
+          parentId: "m2",
+          timestamp: "2026-04-05T10:00:03.000Z",
+          message: {
+            role: "user",
+            content: "real prompt",
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const exitCode = await runCli(["repair", "--cwd", projectDir], {
+      cwd: repoRoot,
+      homeDir,
+      readFile,
+      writeFile,
+      mkdir,
+      lstat,
+      load: () =>
+        loadRegistry(registryPath, {
+          readFile,
+        }),
+      save: async () => {},
+      stdout(line) {
+        lines.push(line);
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(lines[0]).toContain("repair complete");
+
+    const repaired = (await readFile(piSessionPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            message?: { content?: unknown; usage?: unknown };
+          },
+      );
+
+    expect(repaired).toHaveLength(3);
+    expect(repaired[1]?.message?.content).toEqual([
+      { type: "text", text: "Staging file.\n\nPushed." },
+    ]);
+    expect(repaired[1]?.message?.usage).toMatchObject({
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: { total: 0 },
+    });
+    expect(repaired[2]?.message?.content).toBe("real prompt");
   });
 });

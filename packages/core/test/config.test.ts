@@ -17,7 +17,21 @@ describe("config and privacy helpers", () => {
     config.optIn = true;
     config.enabledProjects = ["/repo/demo"];
     expect(isProjectEnabled(config, "/repo/demo")).toBe(true);
+    expect(isProjectEnabled(config, "/repo/demo/nested")).toBe(true);
     expect(isProjectEnabled(config, "/repo/other")).toBe(false);
+  });
+
+  it("lets disabled project scopes override parent allowlists", () => {
+    const config = createDefaultConfig();
+    config.optIn = true;
+    config.enabledProjects = ["/Users/example"];
+    config.disabledProjects = ["/Users/example/private"];
+
+    expect(isProjectEnabled(config, "/Users/example/app")).toBe(true);
+    expect(isProjectEnabled(config, "/Users/example/private")).toBe(false);
+    expect(isProjectEnabled(config, "/Users/example/private/nested")).toBe(
+      false,
+    );
   });
 
   it("checks per-direction sync controls", () => {

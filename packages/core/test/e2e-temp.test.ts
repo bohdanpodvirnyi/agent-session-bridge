@@ -351,13 +351,13 @@ describe("temp-folder end to end", () => {
     await runCli(["repair", "bridge-cli-1"], cliDeps);
     await runCli(["import-project", projectDir], cliDeps);
 
-    expect(output.some((line) => line.includes("setup complete"))).toBe(true);
+    expect(output.some((line) => line.includes("setup"))).toBe(true);
     expect(output.some((line) => line.includes("linked bridge-cli-1"))).toBe(
       true,
     );
     expect(output.some((line) => line.includes("import claude:"))).toBe(true);
     expect(output.some((line) => line.includes("imported"))).toBe(true);
-    expect(output.some((line) => line.includes("repair queued"))).toBe(true);
+    expect(output.some((line) => line.includes("repair complete"))).toBe(true);
     expect(output.some((line) => line.includes("bridge-cli-1"))).toBe(true);
 
     const registry = await loadRegistry(registryPath, { readFile });
@@ -365,7 +365,7 @@ describe("temp-folder end to end", () => {
       registry,
       "bridge-cli-1",
     );
-    expect(conversation?.repair?.status).toBe("running");
+    expect(conversation?.repair?.status).toBe("idle");
 
     const watcherTicks: string[] = [];
     const watcher = startWatchMode(() => {
