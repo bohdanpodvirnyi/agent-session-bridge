@@ -60,8 +60,6 @@ pnpm exec prettier --check .
 ## Documentation
 
 - [TESTING.md](./TESTING.md): test workflow
-- [SPEC.md](./SPEC.md): project specification
-- [TASKS.md](./TASKS.md): live delivery checklist
 - [docs/HOOKS.md](./docs/HOOKS.md): hook and extension notes
 - [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md): debugging and repair notes
 - [CONTRIBUTING.md](./CONTRIBUTING.md): contribution workflow
@@ -69,5 +67,5 @@ pnpm exec prettier --check .
 ## Current Limitations
 
 - Real external-tool installation is still manual.
-- Codex live resume behavior is not yet fully proven in a real runtime.
+- Some imported legacy Codex tool-call history can still emit orphan-output warnings during resume.
 - The repository is better described as "public alpha" than "finished product."
