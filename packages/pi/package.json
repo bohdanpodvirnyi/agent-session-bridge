@@ -4,10 +4,11 @@
   "type": "module",
   "description": "Pi integration package for Agent Session Bridge.",
   "license": "MIT",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./index.ts",
+  "types": "./dist/pi/src/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "index.ts"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

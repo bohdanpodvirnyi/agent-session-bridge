@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   createDefaultConfig,
+  deserializeBridgeConfig,
   isProjectEnabled,
   redactSecrets,
+  serializeBridgeConfig,
   shouldSyncDirection,
 } from "../src/index.js";
 
@@ -31,5 +33,17 @@ describe("config and privacy helpers", () => {
     );
     expect(redacted).toContain("[REDACTED]");
     expect(redacted.includes("sk-secret123")).toBe(false);
+  });
+
+  it("serializes regex redaction patterns for persisted config files", () => {
+    const config = createDefaultConfig();
+    const serialized = serializeBridgeConfig(config);
+    const restored = deserializeBridgeConfig(serialized);
+
+    expect(serialized.redactionPatterns[0]).toMatchObject({
+      source: "sk-[a-z0-9]+",
+      flags: "giu",
+    });
+    expect(restored.redactionPatterns[0]?.test("sk-secret123")).toBe(true);
   });
 });

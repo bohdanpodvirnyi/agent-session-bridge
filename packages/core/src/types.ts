@@ -15,6 +15,7 @@ export interface SyncWatermark {
 export interface ToolMirror {
   sessionPath: string;
   nativeId: string;
+  seededSourceOffset?: number;
 }
 
 export interface RepairState {

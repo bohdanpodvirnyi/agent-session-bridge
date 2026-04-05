@@ -58,7 +58,7 @@ describe("sync helpers", () => {
     expect(entries[0]?.message).toMatchObject({ role: "user" });
   });
 
-  it("creates Codex rollout items with synthetic turn boundaries", () => {
+  it("creates Codex rollout items with resumable task boundaries", () => {
     const messages: NormalizedMessage[] = [
       {
         id: "m1",
@@ -76,7 +76,9 @@ describe("sync helpers", () => {
     expect(rollout.map((item) => item.type)).toEqual([
       "session_meta",
       "event_msg",
+      "turn_context",
       "response_item",
+      "event_msg",
       "event_msg",
     ]);
   });

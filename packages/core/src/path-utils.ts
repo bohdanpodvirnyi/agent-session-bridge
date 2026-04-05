@@ -62,8 +62,8 @@ export function getClaudeCodeProjectDir(cwd: string, homeDir: string): string {
 }
 
 export function getCodexSessionDir(date: Date, homeDir: string): string {
-  const year = String(date.getUTCFullYear());
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(date.getUTCDate()).padStart(2, "0");
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
   return join(homeDir, ".codex", "sessions", year, month, day);
 }

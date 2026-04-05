@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type {
   ClaudeCodeLine,
   CodexRolloutItem,
@@ -5,6 +7,21 @@ import type {
   NormalizedMessage,
   PiSessionEntry,
 } from "./types.js";
+
+function codexFallbackId(item: CodexRolloutItem): string {
+  const digest = createHash("sha1")
+    .update(JSON.stringify(item.payload))
+    .digest("hex");
+  return digest.slice(0, 12);
+}
+
+function codexItemTimestamp(item: CodexRolloutItem): string {
+  return (
+    ((item as { timestamp?: unknown }).timestamp as string | undefined) ??
+    (typeof item.payload.timestamp === "string" ? item.payload.timestamp : undefined) ??
+    new Date(0).toISOString()
+  );
+}
 
 function normalizeContentItem(item: unknown): NormalizedContent[] {
   if (typeof item === "string") {
@@ -181,9 +198,12 @@ export function convertCodexItemToNormalized(
 ): NormalizedMessage | null {
   if (item.type === "response_item" && item.payload.type === "message") {
     return {
-      id: String(item.payload.id ?? "codex-message"),
+      id:
+        typeof item.payload.id === "string"
+          ? item.payload.id
+          : `codex-${codexFallbackId(item)}`,
       role: item.payload.role === "assistant" ? "assistant" : "user",
-      timestamp: String(item.payload.timestamp ?? new Date(0).toISOString()),
+      timestamp: codexItemTimestamp(item),
       content: normalizeContentList(item.payload.content),
     };
   }
@@ -193,9 +213,12 @@ export function convertCodexItemToNormalized(
     item.payload.type === "function_call_output"
   ) {
     return {
-      id: String(item.payload.call_id ?? "codex-tool"),
+      id:
+        typeof item.payload.call_id === "string"
+          ? item.payload.call_id
+          : `codex-tool-${codexFallbackId(item)}`,
       role: "tool",
-      timestamp: String(item.payload.timestamp ?? new Date(0).toISOString()),
+      timestamp: codexItemTimestamp(item),
       content: [
         {
           type: "tool_result",

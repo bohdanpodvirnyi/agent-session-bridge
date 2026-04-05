@@ -190,7 +190,7 @@ Not preserved in v1:
 
 ### 7.2 Phase 2: Codex
 
-Codex support is conditional on validation.
+Codex support is validated.
 
 Phase 2 exits design-only status only after all of the following are proven with fixtures and local resume tests:
 
@@ -199,7 +199,7 @@ Phase 2 exits design-only status only after all of the following are proven with
 3. synthetic turn boundaries are sufficient for reconstruction
 4. rollout discovery from hook context is reliable enough for incremental sync
 
-Until those are proven, Codex is labeled experimental.
+Those proofs now exist in automated checks and real local resume validation, so Codex is no longer labeled experimental.
 
 ## 8. Format Handling Rules
 
@@ -282,7 +282,7 @@ Responsibilities:
 
 - observe native session events
 - create or continue linked bridge conversations
-- append mirrors for Claude and experimental Codex
+- append mirrors for Claude and Codex
 - persist enough native bridge state to recover after extension reload if Pi supports safe custom entries
 
 ### 11.3 Claude Hooks
@@ -297,7 +297,6 @@ Responsibilities:
 
 Responsibilities:
 
-- experimental until validation gates pass
 - same high-level responsibilities as Claude hooks
 - additional rollout discovery and turn-boundary validation
 
@@ -368,7 +367,7 @@ Required scenarios:
 
 ### 14.3 Codex Acceptance Tests
 
-Required before Codex exits experimental:
+Required for Codex validation:
 
 1. imported rollout is listed
 2. imported rollout resumes successfully
@@ -402,7 +401,7 @@ Add CLI repair and audit commands.
 
 ### Step 4
 
-Prototype Codex support behind an experimental flag and validate against real resume behavior.
+Validate Codex support against real resume behavior and keep it aligned with native rollout expectations.
 
 ### Step 5
 
@@ -424,4 +423,4 @@ The project is successful when:
 1. a user can move between Pi and Claude in the same repo and continue one linked conversation
 2. bridge state loss does not create transcript ping-pong or unbounded duplication
 3. old sessions for the same repo do not flood the target tool's resume list
-4. Codex remains clearly experimental until resumability is proven
+4. Codex resumes imported bridge sessions reliably enough to be treated as a supported path

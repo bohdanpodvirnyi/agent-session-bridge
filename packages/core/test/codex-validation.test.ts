@@ -1,21 +1,29 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  generateCodexThreadId,
+  isCodexThreadId,
+} from "../src/index.js";
+import {
   buildExperimentalRollout,
   discoverRolloutPath,
 } from "../../codex/src/index.js";
 
 describe("codex validation gate", () => {
   it("creates a rollout path that matches the expected resume location pattern", () => {
+    const date = new Date(2026, 3, 5, 10, 0, 0);
+    const threadId = generateCodexThreadId(date);
     const path = discoverRolloutPath(
-      "thread-1",
-      "/repo/demo",
-      new Date("2026-04-05T10:00:00.000Z"),
+      threadId,
+      date,
+      "/repo/demo/.codex",
     );
-    expect(path).toContain("rollout-thread-1.jsonl");
+    expect(path).toContain(threadId);
+    expect(path).toContain("rollout-2026-04-05T10-00-00-");
   });
 
-  it("builds a rollout with resumable boundaries around each message", () => {
+  it("builds a rollout with resumable task envelopes and a Codex-compatible thread id", () => {
+    const threadId = generateCodexThreadId(new Date(2026, 3, 5, 10, 0, 0));
     const rollout = buildExperimentalRollout(
       [
         {
@@ -26,11 +34,13 @@ describe("codex validation gate", () => {
         },
       ],
       "/repo/demo",
-      "thread-1",
+      threadId,
     );
 
     expect(rollout[0]?.type).toBe("session_meta");
-    expect(rollout[1]?.type).toBe("event_msg");
-    expect(rollout[3]?.type).toBe("event_msg");
+    expect(isCodexThreadId(rollout[0]!.payload.id)).toBe(true);
+    expect(rollout[1]?.payload.type).toBe("task_started");
+    expect(rollout[2]?.type).toBe("turn_context");
+    expect(rollout.at(-1)?.payload.type).toBe("task_complete");
   });
 });

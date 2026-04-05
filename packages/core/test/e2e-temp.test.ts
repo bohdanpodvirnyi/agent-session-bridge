@@ -95,13 +95,25 @@ async function writeAdjustedFixture(
 
 async function makeCliDeps(
   registryPath: string,
+  homeDir: string,
+  cwd: string,
   output: string[],
 ): Promise<{
   load(): Promise<BridgeRegistry>;
   save(registry: BridgeRegistry): Promise<void>;
   stdout(line: string): void;
+  homeDir: string;
+  cwd: string;
+  readFile: typeof readFile;
+  writeFile: typeof writeFile;
+  mkdir: typeof mkdir;
 }> {
   return {
+    homeDir,
+    cwd,
+    readFile,
+    writeFile,
+    mkdir,
     load: () =>
       loadRegistry(registryPath, {
         readFile,
@@ -303,13 +315,38 @@ describe("temp-folder end to end", () => {
   it("runs CLI and daemon flows against a temp registry and verifies persisted behavior", async () => {
     const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
     const output: string[] = [];
-    const cliDeps = await makeCliDeps(registryPath, output);
+    const cliDeps = await makeCliDeps(
+      registryPath,
+      homeDir,
+      projectDir,
+      output,
+    );
+    const piSessionPath = join(
+      homeDir,
+      ".pi",
+      "agent",
+      "sessions",
+      "--demo-project-source--",
+      "pi-session.jsonl",
+    );
+
+    await writeAdjustedFixture(
+      join(fixturesDir, "pi-session.jsonl"),
+      piSessionPath,
+      projectDir,
+    );
 
     await runCli(["setup"], cliDeps);
     await runCli(["link", "bridge-cli-1", projectDir], cliDeps);
     await runCli(["list"], cliDeps);
-    await runCli(["import", "--latest", "--dry-run"], cliDeps);
-    await runCli(["import", "--all"], cliDeps);
+    await runCli(
+      ["import", "--latest", "--tool", "claude", "--cwd", projectDir],
+      cliDeps,
+    );
+    await runCli(
+      ["import", "--all", "--tool", "claude", "--cwd", projectDir],
+      cliDeps,
+    );
     await runCli(["audit"], cliDeps);
     await runCli(["repair", "bridge-cli-1"], cliDeps);
     await runCli(["import-project", projectDir], cliDeps);
@@ -318,12 +355,8 @@ describe("temp-folder end to end", () => {
     expect(output.some((line) => line.includes("linked bridge-cli-1"))).toBe(
       true,
     );
-    expect(output.some((line) => line.includes("import mode: --latest"))).toBe(
-      true,
-    );
-    expect(output.some((line) => line.includes("import mode: --all"))).toBe(
-      true,
-    );
+    expect(output.some((line) => line.includes("import claude:"))).toBe(true);
+    expect(output.some((line) => line.includes("imported"))).toBe(true);
     expect(output.some((line) => line.includes("repair queued"))).toBe(true);
     expect(output.some((line) => line.includes("bridge-cli-1"))).toBe(true);
 

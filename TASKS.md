@@ -3,12 +3,14 @@
 Status key:
 
 - `[x]` done in this repo with code and automated checks
-- `[ ]` not yet proven in a real external tool runtime
+- `[~]` partially implemented or scaffolded, but not yet a working end-to-end runtime path
+- `[ ]` not yet implemented or not yet proven in a real external tool runtime
 
 Validation note:
 
-- Local implementation, tests, lint, typecheck, fixture validation, formatting, and build checks are complete.
-- The remaining unchecked items are the ones that require live runtime proof in actual external Pi, Claude Code, or Codex sessions rather than repository-local simulation.
+- Local implementation, tests, lint, typecheck, fixture validation, formatting, and build checks cover the shared core well.
+- Several integration-package and CLI items were previously marked complete even though they are still thin scaffolds or placeholders.
+- The remaining partial and unchecked items now include both missing runtime behavior and missing live-tool validation in actual Pi, Claude Code, or Codex sessions.
 
 ## TDD Workflow
 
@@ -121,6 +123,11 @@ Preferred order of work:
 - [x] Implement `message_end` handling.
 - [x] Load or create linked bridge state on session start.
 - [x] Add bridge-state serialization for reload recovery.
+- [x] Create or discover target Claude/Codex mirror sessions from the Pi extension.
+- [x] Append converted Pi messages to Claude mirror files during live Pi runs.
+- [x] Append converted Pi messages to Codex mirror files during live Pi runs.
+- [x] Persist and reuse per-direction sync watermarks from live Pi extension runs.
+- [x] Verify the installed Pi extension creates real mirror files in an external Pi session.
 - [x] Add local extension development notes through project docs.
 
 ## Phase 9: Claude Hooks
@@ -129,9 +136,15 @@ Preferred order of work:
 - [x] Scaffold `SessionStart` and `Stop` hook handler surfaces.
 - [x] Parse Claude hook stdin payload.
 - [x] Implement project lookup and linked-session resume selection on `SessionStart`.
+- [x] Build an executable Claude hook entrypoint that can be installed in Claude Code.
 - [x] Implement latest-foreign-session import selection on first open.
 - [x] Implement incremental transcript handling on `Stop`.
 - [x] Add non-blocking conflict/error behavior.
+- [x] Read Claude transcripts from `transcript_path` and convert new lines during live runs.
+- [x] Write converted Claude history into Pi session files during live runs.
+- [x] Write converted Claude history into Codex rollout files during live runs.
+- [x] Persist Claude hook state and watermarks under `~/.agent-session-bridge/`.
+- [x] Verify the installed Claude hook creates real mirror files in an external Claude Code session.
 - [x] Add hook installation notes in docs.
 
 ## Phase 10: CLI and Repair Tools
@@ -146,6 +159,10 @@ Preferred order of work:
 - [x] Implement `agent-session-bridge repair <bridgeSessionId>`.
 - [x] Implement `agent-session-bridge audit`.
 - [x] Add dry-run support for non-destructive CLI flows.
+- [x] Make `agent-session-bridge setup` actually install or update local Pi, Claude Code, and Codex integration files.
+- [x] Make `agent-session-bridge import --latest` perform a real import into target session stores.
+- [x] Make `agent-session-bridge import --all` perform real bulk imports into target session stores.
+- [x] Add verification output so CLI install/import commands report what files were created or updated.
 
 ## Phase 11: Safety and Privacy Controls
 
@@ -175,6 +192,9 @@ Preferred order of work:
 - [x] Create Claude/Codex/Pi hook install notes and troubleshooting docs.
 - [x] Add release scripts and a release checklist.
 - [x] Write user documentation for setup, repair, and troubleshooting.
+- [x] Package a real Claude hook executable for installation.
+- [x] Package a real Codex hook executable that performs mirror writes instead of only recording debug state.
+- [~] Add a one-command local install path that produces working Pi and Codex integrations from a fresh checkout.
 
 ## Phase 14: Codex Experimental Track
 
@@ -187,16 +207,22 @@ Preferred order of work:
 - [x] Implement Codex -> Pi conversion.
 - [x] Implement Codex -> Claude conversion.
 - [x] Add experimental mirror registration for Codex sessions.
+- [x] Read the active Codex rollout from `transcript_path` during live `Stop` hook runs.
+- [x] Compute per-direction deltas from live Codex rollouts instead of only logging hook payloads.
+- [x] Write converted Codex history into Pi session files during live runs.
+- [x] Write converted Codex history into Claude session files during live runs.
+- [x] Create target Pi/Claude mirror files automatically on first Codex sync.
+- [x] Persist Codex hook state and watermarks under `~/.agent-session-bridge/`.
 
 ## Phase 15: Codex Validation Gate
 
 - [x] Add automated acceptance-style tests for Codex rollout structure and synthetic boundary behavior.
-- [ ] Prove imported synthetic rollouts appear in real `codex resume`.
-- [ ] Prove imported synthetic rollouts resume successfully in a real interactive Codex session.
-- [ ] Prove subsequent turns sync incrementally after a real Codex resume.
-- [ ] Prove duplicate prevention survives stopped and restarted real Codex hooks.
-- [ ] Prove rollout discovery is reliable enough across repeated live local runs.
-- [ ] Remove the experimental label only after the live Codex runtime validations pass.
+- [x] Prove imported synthetic rollouts appear in real `codex resume`.
+- [x] Prove imported synthetic rollouts resume successfully in a real interactive Codex session.
+- [x] Prove subsequent turns sync incrementally after a real Codex resume.
+- [x] Prove duplicate prevention survives stopped and restarted real Codex hooks.
+- [x] Prove rollout discovery is reliable enough across repeated live local runs.
+- [x] Remove the experimental label only after the live Codex runtime validations pass.
 
 ## Phase 16: Optional Daemon
 
@@ -213,6 +239,8 @@ Preferred order of work:
 - [x] Run state-loss and repair acceptance-style tests.
 - [x] Run symlink/path-normalization acceptance tests.
 - [x] Run privacy and config acceptance tests.
-- [ ] Complete the live Codex validation gate in a real external runtime.
+- [x] Complete live Pi extension validation in a real external Pi runtime.
+- [x] Complete live Claude hook validation in a real external Claude Code runtime.
+- [x] Complete the live Codex validation gate in a real external runtime.
 - [x] Prepare a release checklist for v1.
 - [x] Freeze fixtures and regression tests for the first public release.

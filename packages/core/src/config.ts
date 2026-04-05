@@ -8,6 +8,17 @@ export interface BridgeConfig {
   redactionPatterns: RegExp[];
 }
 
+export interface SerializedBridgeConfig {
+  optIn: boolean;
+  enabledProjects: string[];
+  disabledProjects: string[];
+  directions: Record<`${ToolName}->${ToolName}`, boolean>;
+  redactionPatterns: Array<{
+    source: string;
+    flags: string;
+  }>;
+}
+
 export function createDefaultConfig(): BridgeConfig {
   return {
     optIn: false,
@@ -57,4 +68,43 @@ export function redactSecrets(content: string, patterns: RegExp[]): string {
     (value, pattern) => value.replace(pattern, "[REDACTED]"),
     content,
   );
+}
+
+export function serializeBridgeConfig(
+  config: BridgeConfig,
+): SerializedBridgeConfig {
+  return {
+    ...config,
+    redactionPatterns: config.redactionPatterns.map((pattern) => ({
+      source: pattern.source,
+      flags: pattern.flags,
+    })),
+  };
+}
+
+export function deserializeBridgeConfig(
+  value: SerializedBridgeConfig,
+): BridgeConfig {
+  return {
+    ...value,
+    redactionPatterns: value.redactionPatterns.map(
+      (pattern) => new RegExp(pattern.source, pattern.flags),
+    ),
+  };
+}
+
+export async function loadBridgeConfig(
+  configPath: string,
+  fs: { readFile(path: string, encoding: BufferEncoding): Promise<string> },
+): Promise<BridgeConfig> {
+  try {
+    const raw = await fs.readFile(configPath, "utf8");
+    return deserializeBridgeConfig(JSON.parse(raw) as SerializedBridgeConfig);
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "ENOENT") {
+      return createDefaultConfig();
+    }
+    throw error;
+  }
 }

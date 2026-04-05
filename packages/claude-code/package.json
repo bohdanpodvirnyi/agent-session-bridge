@@ -4,8 +4,8 @@
   "type": "module",
   "description": "Claude Code integration package for Agent Session Bridge.",
   "license": "MIT",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/claude-code/src/index.js",
+  "types": "./dist/claude-code/src/index.d.ts",
   "files": [
     "dist"
   ],
