@@ -53,7 +53,7 @@
     "format": "prettier --check .",
     "release:check": "pnpm lint && pnpm test && pnpm typecheck",
     "test:real-agents": "REAL_AGENT_E2E=1 vitest run packages/core/test/e2e-real-commands.test.ts",
-    "test": "vitest run",
+    "test": "pnpm build && vitest run",
     "test:watch": "vitest",
     "typecheck": "pnpm -r typecheck"
   },
