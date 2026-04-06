@@ -1439,7 +1439,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   return 1;
 }
 
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
   const homeDir = homedir();
   const registryPath = resolveRegistryPath(homeDir);
 

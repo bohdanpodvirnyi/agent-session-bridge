@@ -2,7 +2,7 @@
   "name": "agent-session-bridge",
   "private": false,
   "type": "module",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Bridge local AI coding sessions between Pi, Claude Code, and Codex.",
   "license": "MIT",
   "repository": {
@@ -17,11 +17,12 @@
     "access": "public"
   },
   "bin": {
-    "agent-session-bridge": "./packages/cli/dist/cli/src/index.js"
+    "agent-session-bridge": "bin/agent-session-bridge"
   },
   "files": [
     "README.md",
     "LICENSE",
+    "bin",
     "packages/cli/dist",
     "packages/cli/package.json",
     "packages/pi/dist",
