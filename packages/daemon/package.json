@@ -4,6 +4,14 @@
   "type": "module",
   "description": "Optional backfill and repair daemon helpers for Agent Session Bridge.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bohdanpodvirnyi/agent-session-bridge.git"
+  },
+  "homepage": "https://github.com/bohdanpodvirnyi/agent-session-bridge",
+  "bugs": {
+    "url": "https://github.com/bohdanpodvirnyi/agent-session-bridge/issues"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [

@@ -14,7 +14,7 @@
 - Confirm the bridge registry links the expected native session ids.
 - Check `~/.agent-session-bridge/config.json`.
 - If `optIn` is `true` and `enabledProjects` is empty, all projects are enabled by default.
-- If `enabledProjects` is non-empty, only those exact project paths will sync.
+- If `enabledProjects` is non-empty, parent paths also enable nested projects below them.
 - `disabledProjects` always overrides `enabledProjects`.
 - If Codex has chats for a folder but Pi shows no sessions there, the most common cause is that the folder is not enabled in config.
 

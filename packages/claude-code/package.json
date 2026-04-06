@@ -4,6 +4,14 @@
   "type": "module",
   "description": "Claude Code integration package for Agent Session Bridge.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bohdanpodvirnyi/agent-session-bridge.git"
+  },
+  "homepage": "https://github.com/bohdanpodvirnyi/agent-session-bridge",
+  "bugs": {
+    "url": "https://github.com/bohdanpodvirnyi/agent-session-bridge/issues"
+  },
   "main": "./dist/claude-code/src/index.js",
   "types": "./dist/claude-code/src/index.d.ts",
   "files": [

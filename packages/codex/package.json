@@ -2,8 +2,16 @@
   "name": "agent-session-bridge-codex",
   "version": "0.0.0",
   "type": "module",
-  "description": "Experimental Codex integration package for Agent Session Bridge.",
+  "description": "Codex integration package for Agent Session Bridge.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bohdanpodvirnyi/agent-session-bridge.git"
+  },
+  "homepage": "https://github.com/bohdanpodvirnyi/agent-session-bridge",
+  "bugs": {
+    "url": "https://github.com/bohdanpodvirnyi/agent-session-bridge/issues"
+  },
   "main": "./dist/codex/src/index.js",
   "types": "./dist/codex/src/index.d.ts",
   "files": [

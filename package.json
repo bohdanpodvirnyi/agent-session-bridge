@@ -5,6 +5,14 @@
   "version": "0.0.0",
   "description": "Bridge local AI coding sessions between Pi, Claude Code, and Codex.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bohdanpodvirnyi/agent-session-bridge.git"
+  },
+  "homepage": "https://github.com/bohdanpodvirnyi/agent-session-bridge",
+  "bugs": {
+    "url": "https://github.com/bohdanpodvirnyi/agent-session-bridge/issues"
+  },
   "keywords": [
     "ai",
     "coding-agents",

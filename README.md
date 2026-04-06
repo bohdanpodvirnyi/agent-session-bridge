@@ -1,14 +1,18 @@
 # Agent Session Bridge
 
+[![CI](https://github.com/bohdanpodvirnyi/agent-session-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/bohdanpodvirnyi/agent-session-bridge/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
 Agent Session Bridge mirrors resumable local agent sessions between Pi, Claude Code, and Codex.
 
 ## Status
 
-This repository is in active development.
+This repository is public and usable today from a local checkout.
 
-- Local parsing, conversion, sync, registry, CLI, and temp-folder end-to-end tests are implemented.
-- Real live-runtime validation inside the actual external tools is still partially outstanding, especially for Codex resume behavior.
-- The project is ready to share as a public repository, but not yet a polished one-command installer.
+- Native format parsing, conversion, sync, registry, CLI, and repair flows are implemented.
+- The repo includes both file-level end-to-end coverage and real-command E2E coverage against the actual Pi, Claude Code, and Codex CLIs.
+- Setup currently assumes a local clone plus `pnpm build`; npm-style `npx` installation is not packaged yet.
+- Long-lived messy sessions can still require `repair`, especially after older bridge versions.
 
 ## What It Does
 
@@ -32,7 +36,7 @@ The bridge is designed to:
 ## Quick Start
 
 ```bash
-git clone <your-repo-url> agent-session-bridge
+git clone https://github.com/bohdanpodvirnyi/agent-session-bridge.git
 cd agent-session-bridge
 
 pnpm install
@@ -81,7 +85,8 @@ Important behavior:
 - `setup` enables sync for the current working directory by default.
 - `setup --global` or `enable --global` switches to global mode by leaving `enabledProjects` empty.
 - If `optIn` is `true` and `enabledProjects` is empty, all projects are enabled unless explicitly blocked.
-- If `enabledProjects` is non-empty, only those exact project paths will sync.
+- If `enabledProjects` is non-empty, parent paths also enable nested projects beneath them.
+- `disabledProjects` always overrides `enabledProjects`, including inherited parent-path matches.
 
 Global mode example:
 
@@ -165,7 +170,7 @@ pnpm exec prettier --check .
 
 ## Current Limitations
 
-- External-tool installation is now guided by `setup`, but still assumes local access to the cloned repo and built workspace packages.
-- Multiple independent chats in the same folder are not yet guaranteed to stay separated across every tool.
+- `setup` wires a local clone cleanly, but true npm-distributed `npx agent-session-bridge setup` is not ready yet.
+- Older imported transcripts can still need `repair` if they were created by earlier bridge versions.
 - Some imported legacy Codex tool-call history can still emit orphan-output warnings during resume.
-- The repository is better described as "public alpha" than "finished product."
+- Public API and package versioning are still early, so expect some installer and config changes as the project hardens.

@@ -4,6 +4,14 @@
   "type": "module",
   "description": "Pi integration package for Agent Session Bridge.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bohdanpodvirnyi/agent-session-bridge.git"
+  },
+  "homepage": "https://github.com/bohdanpodvirnyi/agent-session-bridge",
+  "bugs": {
+    "url": "https://github.com/bohdanpodvirnyi/agent-session-bridge/issues"
+  },
   "main": "./index.ts",
   "types": "./dist/pi/src/index.d.ts",
   "files": [
