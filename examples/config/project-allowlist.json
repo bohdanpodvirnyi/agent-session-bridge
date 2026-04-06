@@ -1,0 +1,29 @@
+{
+  "optIn": true,
+  "enabledProjects": [
+    "/Users/example/projects/app-one",
+    "/Users/example/projects/app-two"
+  ],
+  "disabledProjects": ["/Users/example/projects/app-two/private-scratch"],
+  "directions": {
+    "pi->pi": false,
+    "pi->claude": true,
+    "pi->codex": true,
+    "claude->pi": true,
+    "claude->claude": false,
+    "claude->codex": true,
+    "codex->pi": true,
+    "codex->claude": true,
+    "codex->codex": false
+  },
+  "redactionPatterns": [
+    {
+      "source": "sk-[a-z0-9]+",
+      "flags": "giu"
+    },
+    {
+      "source": "api[_-]?key\\s*[:=]\\s*\\S+",
+      "flags": "giu"
+    }
+  ]
+}

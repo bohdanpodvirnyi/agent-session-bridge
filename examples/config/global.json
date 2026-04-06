@@ -1,0 +1,26 @@
+{
+  "optIn": true,
+  "enabledProjects": [],
+  "disabledProjects": [],
+  "directions": {
+    "pi->pi": false,
+    "pi->claude": true,
+    "pi->codex": true,
+    "claude->pi": true,
+    "claude->claude": false,
+    "claude->codex": true,
+    "codex->pi": true,
+    "codex->claude": true,
+    "codex->codex": false
+  },
+  "redactionPatterns": [
+    {
+      "source": "sk-[a-z0-9]+",
+      "flags": "giu"
+    },
+    {
+      "source": "api[_-]?key\\s*[:=]\\s*\\S+",
+      "flags": "giu"
+    }
+  ]
+}

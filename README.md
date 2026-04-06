@@ -3,50 +3,58 @@
 [![CI](https://github.com/bohdanpodvirnyi/agent-session-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/bohdanpodvirnyi/agent-session-bridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Agent Session Bridge mirrors resumable local agent sessions between Pi, Claude Code, and Codex.
+Local-first session portability for Pi, Claude Code, and Codex.
 
-## Status
+`agent-session-bridge` mirrors resumable conversations between the three local coding agents so you can start in one tool, switch tools in the same folder, and keep going from the same thread.
 
-This repository is public and npm-distribution ready.
+## Why
 
-- Native format parsing, conversion, sync, registry, CLI, and repair flows are implemented.
-- The repo includes both file-level end-to-end coverage and real-command E2E coverage against the actual Pi, Claude Code, and Codex CLIs.
-- The package now supports install/setup from a packaged npm artifact and writes self-contained runtime assets into `~/.agent-session-bridge/runtime`.
-- Long-lived messy sessions can still require `repair`, especially after older bridge versions.
+Each agent stores sessions in a different place and in a different format:
 
-## What It Does
+- Pi uses session trees in `~/.pi/agent/sessions`
+- Claude Code uses JSONL transcripts in `~/.claude/projects`
+- Codex uses rollout event logs in `~/.codex/sessions`
 
-The bridge is designed to:
+This project sits between them and keeps those local stores in sync.
 
-- read native session data from Pi, Claude Code, and Codex
-- normalize conversation history into a shared internal model
-- write mirror sessions into the other tools' local session formats
-- track mirror relationships and replay safety through a local registry
-- support CLI, hook, extension, and daemon-style integration surfaces
+The goal is simple:
 
-## Packages
+1. talk to Pi in a repo
+2. open Claude Code or Codex in that same repo
+3. resume the same conversation instead of starting over
 
-- `packages/core`: parsing, conversion, registry, dedupe, sync, config, and safety helpers
-- `packages/cli`: setup, list, import, link, repair, and audit commands
-- `packages/pi`: Pi integration surface
-- `packages/claude-code`: Claude Code integration surface
-- `packages/codex`: Codex integration surface
-- `packages/daemon`: optional backfill and repair helpers
+## What Makes It Different
 
-## Quick Start
+This repo is not a session viewer, a skills sync, or a live agent-to-agent bridge.
 
-Published npm flow:
+It is focused on one job:
+
+- parse native session formats
+- convert them into the other tools' native formats
+- keep replay-safe mirror state on disk
+- repair older imported sessions when history got messy
+
+The distinctive angle is `local-first durability`.
+
+- The bridge writes directly into each tool's own session store.
+- The CLI installs self-contained runtime assets into `~/.agent-session-bridge/runtime`.
+- Sync, repair, and validation are all built around real local agent behavior.
+
+## Install
+
+Once the package is published:
 
 ```bash
 npx agent-session-bridge setup
 npx agent-session-bridge doctor
 ```
 
-Until the first npm release is published, you can verify the exact same packaged flow locally with:
+Today you can already use the packaged flow from a tarball:
 
 ```bash
 npm pack
 npx --yes --package ./agent-session-bridge-0.0.0.tgz agent-session-bridge setup
+npx --yes --package ./agent-session-bridge-0.0.0.tgz agent-session-bridge doctor
 ```
 
 Local checkout flow:
@@ -61,114 +69,76 @@ node packages/cli/dist/cli/src/index.js setup
 node packages/cli/dist/cli/src/index.js doctor
 ```
 
-The friendly CLI flow is:
+## CLI
+
+Main commands:
+
+- `setup`: install Pi, Claude Code, and Codex integration for the current repo
+- `enable`: enable sync for the current repo or globally
+- `doctor`: inspect install health, project scope, and recent hook activity
+- `repair`: repair imported Pi or Claude sessions for the current repo
+- `import`: import latest or all foreign sessions into selected target tools
+- `list`: show registry conversations
+- `audit`: dump the local bridge registry
+
+Examples:
 
 ```bash
-node packages/cli/dist/cli/src/index.js setup
-node packages/cli/dist/cli/src/index.js enable
-node packages/cli/dist/cli/src/index.js doctor
-node packages/cli/dist/cli/src/index.js repair
+agent-session-bridge setup
+agent-session-bridge enable --global
+agent-session-bridge doctor
+agent-session-bridge repair
+agent-session-bridge import --tool codex --all
 ```
 
-What these commands do:
+## How It Works
 
-- `setup`: installs the Pi package registration, Claude Code hooks, Codex hooks, and writes bridge config for the current project
-- `enable`: enables sync for the current project without reinstalling integrations
-- `doctor`: shows whether Pi / Claude Code / Codex are wired correctly and whether hooks have run recently
-- `repair`: fixes imported Pi session issues such as bad titles, bridge/bootstrap junk, raw directive lines, and missing assistant usage fields
+At a high level:
 
-Run the built CLI directly:
+1. detect a source session from Pi, Claude Code, or Codex
+2. normalize it into a shared internal message model
+3. write compatible mirror entries into the target tool stores
+4. track offsets and mirror identities in a local registry
+5. prevent replay loops and repair malformed historical imports
 
-```bash
-node packages/cli/dist/cli/src/index.js list
-node packages/cli/dist/cli/src/index.js audit
-```
+Runtime state lives under:
 
-## Configuration
+- `~/.agent-session-bridge/config.json`
+- `~/.agent-session-bridge/registry.json`
+- `~/.agent-session-bridge/runtime/`
 
-Bridge config lives at `~/.agent-session-bridge/config.json`.
+## Repo Layout
 
-Fields:
+Top-level packages:
 
-- `optIn`: master on/off switch for sync. If `false`, no project syncs.
-- `enabledProjects`: project allowlist. If this array is empty and `optIn` is `true`, all projects are enabled unless explicitly blocked.
-- `disabledProjects`: project denylist. These paths always win over `enabledProjects`.
-- `directions`: per-tool sync controls such as `codex->pi` or `claude->codex`.
-- `redactionPatterns`: regex patterns applied before content is mirrored into another tool's local store.
+- `packages/core`: parsers, converters, registry, config, sync, dedupe, repair helpers
+- `packages/cli`: install, doctor, import, repair, audit, and setup commands
+- `packages/pi`: Pi integration surface
+- `packages/claude-code`: Claude Code integration surface
+- `packages/codex`: Codex integration surface
+- `packages/daemon`: optional backfill and filesystem-driven helpers
 
-Important behavior:
+Reference material:
 
-- `setup` enables sync for the current working directory by default.
-- `setup --global` or `enable --global` switches to global mode by leaving `enabledProjects` empty.
-- If `optIn` is `true` and `enabledProjects` is empty, all projects are enabled unless explicitly blocked.
-- If `enabledProjects` is non-empty, parent paths also enable nested projects beneath them.
-- `disabledProjects` always overrides `enabledProjects`, including inherited parent-path matches.
+- [examples/config/global.json](./examples/config/global.json)
+- [examples/config/project-allowlist.json](./examples/config/project-allowlist.json)
+- [examples/flows/three-agent-loop.md](./examples/flows/three-agent-loop.md)
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
+- [docs/HOOKS.md](./docs/HOOKS.md)
+- [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)
+- [TESTING.md](./TESTING.md)
+- [CONTRIBUTING.md](./CONTRIBUTING.md)
 
-Global mode example:
+## Validation
 
-```json
-{
-  "optIn": true,
-  "enabledProjects": [],
-  "disabledProjects": [],
-  "directions": {
-    "pi->pi": false,
-    "pi->claude": true,
-    "pi->codex": true,
-    "claude->pi": true,
-    "claude->claude": false,
-    "claude->codex": true,
-    "codex->pi": true,
-    "codex->claude": true,
-    "codex->codex": false
-  },
-  "redactionPatterns": [
-    { "source": "sk-[a-z0-9]+", "flags": "giu" },
-    { "source": "api[_-]?key\\s*[:=]\\s*\\S+", "flags": "giu" }
-  ]
-}
-```
+This repo includes:
 
-Project allowlist example:
+- parser and converter unit tests
+- file-level end-to-end coverage
+- temp-home integration tests
+- real-command E2E coverage against installed `pi`, `claude`, and `codex`
 
-```json
-{
-  "optIn": true,
-  "enabledProjects": [
-    "/Users/example/projects/app-one",
-    "/Users/example/projects/app-two"
-  ],
-  "disabledProjects": [],
-  "directions": {
-    "pi->pi": false,
-    "pi->claude": true,
-    "pi->codex": true,
-    "claude->pi": true,
-    "claude->claude": false,
-    "claude->codex": true,
-    "codex->pi": true,
-    "codex->claude": true,
-    "codex->codex": false
-  },
-  "redactionPatterns": [
-    { "source": "sk-[a-z0-9]+", "flags": "giu" },
-    { "source": "api[_-]?key\\s*[:=]\\s*\\S+", "flags": "giu" }
-  ]
-}
-```
-
-Direction keys:
-
-- `pi->claude`
-- `pi->codex`
-- `claude->pi`
-- `claude->codex`
-- `codex->pi`
-- `codex->claude`
-
-The `x->x` keys are present for completeness and should stay `false`.
-
-## Development
+Run the standard suite:
 
 ```bash
 pnpm test
@@ -177,16 +147,26 @@ pnpm fixture:validate
 pnpm exec prettier --check .
 ```
 
-## Documentation
+Run the real-agent suite:
 
-- [TESTING.md](./TESTING.md): test workflow
-- [docs/HOOKS.md](./docs/HOOKS.md): hook and extension notes
-- [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md): debugging and repair notes
-- [CONTRIBUTING.md](./CONTRIBUTING.md): contribution workflow
+```bash
+pnpm test:real-agents
+```
+
+## Examples
+
+Config examples live in [examples/config](./examples/config).
+
+The demo loop in [examples/flows/three-agent-loop.md](./examples/flows/three-agent-loop.md) shows the intended flow:
+
+1. start a conversation in Pi
+2. resume it in Claude Code
+3. continue it in Codex
+4. come back to Pi and keep going
 
 ## Current Limitations
 
-- The npm package is distribution-ready, but it still needs a first public npm release before plain `npx agent-session-bridge ...` works without a tarball or install.
+- The npm package is distribution-ready, but still needs its first public npm release.
 - Older imported transcripts can still need `repair` if they were created by earlier bridge versions.
-- Some imported legacy Codex tool-call history can still emit orphan-output warnings during resume.
-- Public API and package versioning are still early, so expect some installer and config changes as the project hardens.
+- Some legacy Codex imports can still emit orphan-output warnings during resume.
+- Public API and config shape may still evolve as the project hardens.
