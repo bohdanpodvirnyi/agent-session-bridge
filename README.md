@@ -8,6 +8,10 @@ Local-first session portability for Pi, Claude Code, and Codex.
 
 `agent-session-bridge` mirrors resumable conversations between the three local coding agents so you can start in one tool, switch tools in the same folder, and keep going from the same thread.
 
+![Agent Session Bridge demo](./docs/images/demo-three-agents-v2.png)
+
+https://github.com/user-attachments/assets/d1b151a4-78e9-42ef-98ee-bb5045809f51
+
 ## Why
 
 Each agent stores sessions in a different place and in a different format:
