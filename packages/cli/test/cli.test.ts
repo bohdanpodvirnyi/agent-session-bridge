@@ -471,25 +471,37 @@ describe("CLI", () => {
       await readFile(join(homeDir, ".claude", "settings.json"), "utf8"),
     ) as {
       hooks?: {
-        SessionStart?: Array<{ hooks?: Array<{ command?: string }> }>;
-        Stop?: Array<{ hooks?: Array<{ command?: string }> }>;
+        SessionStart?: Array<{
+          hooks?: Array<{ command?: string; async?: boolean }>;
+        }>;
+        Stop?: Array<{
+          hooks?: Array<{ command?: string; async?: boolean }>;
+        }>;
       };
     };
 
-    const sessionStartCommands =
+    const sessionStartHooks =
       claudeSettings.hooks?.SessionStart?.flatMap((entry) =>
-        (entry.hooks ?? []).map((hook) => hook.command).filter(Boolean),
+        (entry.hooks ?? []).filter((hook) => Boolean(hook.command)),
       ) ?? [];
-    const stopCommands =
+    const stopHooks =
       claudeSettings.hooks?.Stop?.flatMap((entry) =>
-        (entry.hooks ?? []).map((hook) => hook.command).filter(Boolean),
+        (entry.hooks ?? []).filter((hook) => Boolean(hook.command)),
       ) ?? [];
 
-    expect(sessionStartCommands).toEqual([
-      `node ${join(repoRoot, "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} session-start`,
+    expect(sessionStartHooks).toEqual([
+      {
+        type: "command",
+        command: `node ${join(repoRoot, "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} session-start`,
+        async: true,
+      },
     ]);
-    expect(stopCommands).toEqual([
-      `node ${join(repoRoot, "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} stop`,
+    expect(stopHooks).toEqual([
+      {
+        type: "command",
+        command: `node ${join(repoRoot, "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} stop`,
+        async: true,
+      },
     ]);
   });
 

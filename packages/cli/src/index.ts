@@ -272,6 +272,7 @@ function mergeHookArray(
   current: unknown,
   command: string,
   predicate?: (command: string) => boolean,
+  hookConfig: Record<string, unknown> = {},
 ): Array<Record<string, unknown>> {
   const existing = (Array.isArray(current) ? current : [])
     .flatMap((entry) => {
@@ -340,6 +341,7 @@ function mergeHookArray(
         {
           type: "command",
           command,
+          ...hookConfig,
         },
       ],
     },
@@ -393,11 +395,13 @@ async function configureClaudeHooks(
     hooks.SessionStart,
     `node ${hookCliPath} session-start`,
     isBridgeClaudeHook,
+    { async: true },
   );
   hooks.Stop = mergeHookArray(
     hooks.Stop,
     `node ${hookCliPath} stop`,
     isBridgeClaudeHook,
+    { async: true },
   );
   settings.hooks = hooks;
 
@@ -438,6 +442,7 @@ async function configureCodexHooks(
             {
               type: "command",
               command: `node ${hookCliPath} session-start`,
+              async: true,
             },
           ],
         },
@@ -448,6 +453,7 @@ async function configureCodexHooks(
             {
               type: "command",
               command: `node ${hookCliPath} stop`,
+              async: true,
             },
           ],
         },

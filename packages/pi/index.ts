@@ -78,15 +78,7 @@ export default function agentSessionBridge(pi: ExtensionAPI) {
   const homeDir = homedir();
   const registryPath = join(homeDir, ".agent-session-bridge", "registry.json");
 
-  const updateStatus = (ctx: ExtensionContext) => {
-    if (!canUseUi(ctx)) {
-      return;
-    }
-    ctx.ui.setStatus(
-      "agent-session-bridge",
-      state ? `bridge -> ${state.mirrorSessionId}` : "bridge installed",
-    );
-  };
+  const updateStatus = (_ctx: ExtensionContext) => {};
 
   const reload = (ctx: ExtensionContext) => {
     state = loadState(ctx);
