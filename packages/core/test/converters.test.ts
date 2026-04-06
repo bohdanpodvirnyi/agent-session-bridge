@@ -249,6 +249,20 @@ describe("converters", () => {
     ).toEqual([{ type: "text", text: "hello" }]);
   });
 
+  it("drops Claude thinking blocks for imported assistant history", () => {
+    const message: NormalizedMessage = {
+      id: "message-thinking-no-signature",
+      role: "assistant",
+      timestamp: "2026-04-05T10:00:00.000Z",
+      content: [{ type: "thinking", thinking: "reasoning" }],
+    };
+
+    expect(
+      convertNormalizedToClaudeLine(message, "session-1", null, "/repo/demo")
+        .message?.content,
+    ).toEqual([]);
+  });
+
   it("sanitizes Claude tool ids to Claude-safe characters", () => {
     const message: NormalizedMessage = {
       id: "message-tool-id",

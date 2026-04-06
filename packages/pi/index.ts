@@ -17,6 +17,17 @@ import {
 
 const CUSTOM_TYPE = "agent-session-bridge-state";
 
+function isMissingSessionFileError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const nodeError = error as NodeJS.ErrnoException;
+  return (
+    nodeError.code === "ENOENT" ||
+    error.message.includes("ENOENT: no such file or directory")
+  );
+}
+
 function canUseUi(ctx: ExtensionContext): boolean {
   return Boolean(ctx.hasUI);
 }
@@ -121,6 +132,32 @@ export default function agentSessionBridge(pi: ExtensionAPI) {
     }
   };
 
+  const syncCurrentSession = async (ctx: ExtensionContext) => {
+    const sessionFile = ctx.sessionManager.getSessionFile();
+    const sessionId = ctx.sessionManager.getSessionId();
+    if (!sessionFile || !sessionId) {
+      return;
+    }
+
+    const result = await runPiMessageSync(sessionFile, sessionId, {
+      homeDir,
+      registryPath,
+      cwd: ctx.cwd,
+    });
+
+    const claudeMirror = result.conversation.mirrors.claude;
+    if (claudeMirror) {
+      saveTrackedMirror(ctx, claudeMirror.nativeId, claudeMirror.sessionPath);
+    } else if (state) {
+      state = {
+        ...state,
+        updatedAt: new Date().toISOString(),
+      };
+      persistState(pi, state);
+    }
+    updateStatus(ctx);
+  };
+
   pi.on("session_start", async (_event, ctx) => refreshImports(ctx));
   pi.on("session_switch", async (_event, ctx) => refreshImports(ctx));
   pi.on("session_fork", async (_event, ctx) => refreshImports(ctx));
@@ -137,31 +174,29 @@ export default function agentSessionBridge(pi: ExtensionAPI) {
           : event;
 
       handleMessageEnd(entry as never);
-
-      const sessionFile = ctx.sessionManager.getSessionFile();
-      const sessionId = ctx.sessionManager.getSessionId();
-      if (!sessionFile || !sessionId) {
+      await syncCurrentSession(ctx);
+    } catch (error) {
+      if (isMissingSessionFileError(error)) {
         return;
       }
-
-      const result = await runPiMessageSync(sessionFile, sessionId, {
-        homeDir,
-        registryPath,
-        cwd: ctx.cwd,
-      });
-
-      const claudeMirror = result.conversation.mirrors.claude;
-      if (claudeMirror) {
-        saveTrackedMirror(ctx, claudeMirror.nativeId, claudeMirror.sessionPath);
-      } else if (state) {
-        state = {
-          ...state,
-          updatedAt: new Date().toISOString(),
-        };
-        persistState(pi, state);
+      if (canUseUi(ctx)) {
+        ctx.ui.notify(
+          `agent-session-bridge: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          "warning",
+        );
       }
-      updateStatus(ctx);
+    }
+  });
+
+  pi.on("turn_end", async (_event, ctx) => {
+    try {
+      await syncCurrentSession(ctx);
     } catch (error) {
+      if (isMissingSessionFileError(error)) {
+        return;
+      }
       if (canUseUi(ctx)) {
         ctx.ui.notify(
           `agent-session-bridge: ${

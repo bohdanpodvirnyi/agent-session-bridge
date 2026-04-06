@@ -1,6 +1,8 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { describe, expect, it } from "vitest";
 
@@ -9,6 +11,7 @@ import {
   importLatestSessionToTarget,
   isCodexThreadId,
   listForeignSessionCandidates,
+  loadSourceSessionSnapshot,
   loadRegistry,
   readClaudeCodeSession,
   readCodexRollout,
@@ -134,6 +137,32 @@ describe("runtime sync flows", () => {
     expect(registry.conversations[0]?.mirrors.pi?.sessionPath).toBe(
       piSessionPath,
     );
+  });
+
+  it("waits briefly for a newly-created source session file before reading it", async () => {
+    const { homeDir, projectDir } = await makeTempWorkspace();
+    const piSessionPath = join(
+      homeDir,
+      ".pi",
+      "agent",
+      "sessions",
+      "--demo-project-source--",
+      "pi-delayed-session.jsonl",
+    );
+
+    const snapshotPromise = loadSourceSessionSnapshot("pi", piSessionPath);
+
+    await delay(80);
+    await writeAdjustedFixture(
+      join(fixturesDir, "pi-session.jsonl"),
+      piSessionPath,
+      projectDir,
+    );
+
+    const snapshot = await snapshotPromise;
+    expect(snapshot.sourceTool).toBe("pi");
+    expect(snapshot.sourcePath).toBe(piSessionPath);
+    expect(snapshot.chunks).toHaveLength(3);
   });
 
   it("discovers nested foreign sessions and imports the latest one into Pi", async () => {
@@ -390,5 +419,344 @@ describe("runtime sync flows", () => {
           ),
       ),
     ).toBe(true);
+  });
+
+  it("anchors later Pi imports to the current Claude transcript head", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const piSessionPath = join(
+      homeDir,
+      ".pi",
+      "agent",
+      "sessions",
+      "--demo-project-source--",
+      "pi-session.jsonl",
+    );
+
+    await writeAdjustedFixture(
+      join(fixturesDir, "pi-session.jsonl"),
+      piSessionPath,
+      projectDir,
+    );
+
+    const firstRun = await syncSourceSessionToTargets({
+      sourceTool: "pi",
+      sourcePath: piSessionPath,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T10:05:00.000Z"),
+      targetTools: ["claude"],
+    });
+
+    const claudeMirrorPath = firstRun.conversation.mirrors.claude?.sessionPath;
+    expect(claudeMirrorPath).toBeTruthy();
+
+    const claudeMirror = await readClaudeCodeSession(claudeMirrorPath!);
+    const importedAssistant = claudeMirror.findLast(
+      (line) =>
+        line.type === "assistant" &&
+        Array.isArray(line.message?.content) &&
+        line.message.content.some(
+          (item) =>
+            typeof item === "object" &&
+            item !== null &&
+            (item as { type?: string }).type === "text" &&
+            (item as { text?: string }).text === "Looking.",
+        ),
+    );
+    expect(importedAssistant?.uuid).toBeTruthy();
+
+    const nativeUserUuid = "native-claude-user-1";
+    const nativeAssistantUuid = "native-claude-assistant-1";
+    await writeFile(
+      claudeMirrorPath!,
+      `${JSON.stringify({
+        type: "user",
+        uuid: nativeUserUuid,
+        parentUuid: importedAssistant?.uuid ?? null,
+        sessionId: firstRun.conversation.mirrors.claude?.nativeId,
+        timestamp: "2026-04-05T10:05:30.000Z",
+        cwd: projectDir,
+        message: {
+          role: "user",
+          content: "<command-name>/exit</command-name>",
+        },
+      })}\n${JSON.stringify({
+        type: "assistant",
+        uuid: nativeAssistantUuid,
+        parentUuid: nativeUserUuid,
+        sessionId: firstRun.conversation.mirrors.claude?.nativeId,
+        timestamp: "2026-04-05T10:05:31.000Z",
+        cwd: projectDir,
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Catch you later!" }],
+          model: "claude-sonnet",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      })}\n`,
+      { flag: "a" },
+    );
+
+    await writeFile(
+      piSessionPath,
+      `${JSON.stringify({
+        type: "message",
+        id: "dddd4444",
+        parentId: "cccc3333",
+        timestamp: "2026-04-05T10:06:00.000Z",
+        message: {
+          role: "user",
+          content: "Second ping",
+        },
+      })}\n${JSON.stringify({
+        type: "message",
+        id: "eeee5555",
+        parentId: "dddd4444",
+        timestamp: "2026-04-05T10:06:01.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Second answer." }],
+        },
+      })}\n`,
+      { flag: "a" },
+    );
+
+    await syncSourceSessionToTargets({
+      sourceTool: "pi",
+      sourcePath: piSessionPath,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T10:06:30.000Z"),
+      targetTools: ["claude"],
+    });
+
+    const updatedClaudeMirror = await readClaudeCodeSession(claudeMirrorPath!);
+    const secondPing = updatedClaudeMirror.find(
+      (line) =>
+        line.type === "user" &&
+        Array.isArray(line.message?.content) &&
+        line.message.content.some(
+          (item) =>
+            typeof item === "object" &&
+            item !== null &&
+            (item as { type?: string }).type === "text" &&
+            (item as { text?: string }).text === "Second ping",
+        ),
+    );
+    const secondAnswer = updatedClaudeMirror.find(
+      (line) =>
+        line.type === "assistant" &&
+        Array.isArray(line.message?.content) &&
+        line.message.content.some(
+          (item) =>
+            typeof item === "object" &&
+            item !== null &&
+            (item as { type?: string }).type === "text" &&
+            (item as { text?: string }).text === "Second answer.",
+        ),
+    );
+
+    expect(secondPing?.parentUuid).toBe(nativeAssistantUuid);
+    expect(secondAnswer?.parentUuid).toBe(secondPing?.uuid);
+  });
+
+  it("does not replay imported foreign turns when Pi becomes the source again", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const piSessionPath = join(
+      homeDir,
+      ".pi",
+      "agent",
+      "sessions",
+      "--demo-project-source--",
+      "pi-session.jsonl",
+    );
+    const codexPath = join(
+      homeDir,
+      ".codex",
+      "sessions",
+      "2026",
+      "04",
+      "05",
+      "codex-session.jsonl",
+    );
+
+    await writeAdjustedFixture(
+      join(fixturesDir, "pi-session.jsonl"),
+      piSessionPath,
+      projectDir,
+    );
+
+    const initialPi = await syncSourceSessionToTargets({
+      sourceTool: "pi",
+      sourcePath: piSessionPath,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T10:05:00.000Z"),
+      targetTools: ["claude", "codex"],
+    });
+
+    const claudeMirrorPath = initialPi.conversation.mirrors.claude!.sessionPath;
+
+    await syncSourceSessionToTargets({
+      sourceTool: "claude",
+      sourcePath: claudeMirrorPath,
+      sourceSessionId: initialPi.conversation.mirrors.claude!.nativeId,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T10:06:00.000Z"),
+      targetTools: ["pi"],
+    });
+
+    await writeAdjustedFixture(
+      join(fixturesDir, "codex-rollout.jsonl"),
+      codexPath,
+      projectDir,
+    );
+
+    await syncSourceSessionToTargets({
+      sourceTool: "codex",
+      sourcePath: codexPath,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T10:07:00.000Z"),
+      targetTools: ["pi"],
+    });
+
+    await writeFile(
+      piSessionPath,
+      `${JSON.stringify({
+        type: "message",
+        id: "ffff6666",
+        parentId: "cccc3333",
+        timestamp: "2026-04-05T10:08:00.000Z",
+        message: {
+          role: "user",
+          content: "Native Pi follow-up",
+        },
+      })}\n${JSON.stringify({
+        type: "message",
+        id: "1111aaaa",
+        parentId: "ffff6666",
+        timestamp: "2026-04-05T10:08:01.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Native Pi answer." }],
+        },
+      })}\n`,
+      { flag: "a" },
+    );
+
+    const replayedPi = await syncSourceSessionToTargets({
+      sourceTool: "pi",
+      sourcePath: piSessionPath,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T10:09:00.000Z"),
+      targetTools: ["claude"],
+    });
+
+    const claudeLines = await readClaudeCodeSession(claudeMirrorPath);
+    const nativePiPrompts = claudeLines.filter(
+      (line) =>
+        line.type === "user" &&
+        Array.isArray(line.message?.content) &&
+        line.message.content.some(
+          (item) =>
+            typeof item === "object" &&
+            item !== null &&
+            (item as { type?: string }).type === "text" &&
+            (item as { text?: string }).text === "Native Pi follow-up",
+        ),
+    );
+    const repeatedClaudePrompts = claudeLines.filter(
+      (line) =>
+        line.type === "user" &&
+        Array.isArray(line.message?.content) &&
+        line.message.content.some(
+          (item) =>
+            typeof item === "object" &&
+            item !== null &&
+            (item as { type?: string }).type === "text" &&
+            (item as { text?: string }).text === "Fix auth",
+        ),
+    );
+
+    expect(replayedPi.writes[0]?.appendedCount).toBe(2);
+    expect(nativePiPrompts).toHaveLength(1);
+    expect(repeatedClaudePrompts).toHaveLength(1);
+  });
+
+  it("indexes Codex mirrors against an older threads schema without model columns", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const piSessionPath = join(
+      homeDir,
+      ".pi",
+      "agent",
+      "sessions",
+      "--demo-project-source--",
+      "pi-session.jsonl",
+    );
+    const codexDir = join(homeDir, ".codex");
+    const stateDbPath = join(codexDir, "state_5.sqlite");
+
+    await mkdir(codexDir, { recursive: true });
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `
+CREATE TABLE threads (
+    id TEXT PRIMARY KEY,
+    rollout_path TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    model_provider TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    title TEXT NOT NULL,
+    sandbox_policy TEXT NOT NULL,
+    approval_mode TEXT NOT NULL,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    has_user_event INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    archived_at INTEGER,
+    git_sha TEXT,
+    git_branch TEXT,
+    git_origin_url TEXT,
+    cli_version TEXT NOT NULL DEFAULT '',
+    first_user_message TEXT NOT NULL DEFAULT '',
+    agent_nickname TEXT,
+    agent_role TEXT,
+    memory_mode TEXT NOT NULL DEFAULT 'enabled'
+);
+      `,
+    ]);
+
+    await writeAdjustedFixture(
+      join(fixturesDir, "pi-session.jsonl"),
+      piSessionPath,
+      projectDir,
+    );
+
+    const result = await syncSourceSessionToTargets({
+      sourceTool: "pi",
+      sourcePath: piSessionPath,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T10:05:00.000Z"),
+    });
+
+    const codexId = result.conversation.mirrors.codex?.nativeId;
+    expect(codexId).toBeTruthy();
+
+    const indexedRow = execFileSync("sqlite3", [
+      stateDbPath,
+      `select id || '|' || cwd || '|' || title || '|' || source from threads where id='${codexId}';`,
+    ])
+      .toString()
+      .trim();
+
+    expect(indexedRow).toContain(codexId!);
+    expect(indexedRow).toContain(projectDir);
+    expect(indexedRow).toContain("Fix auth");
+    expect(indexedRow).toContain("vscode");
   });
 });

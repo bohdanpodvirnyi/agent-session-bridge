@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 
 import {
+  getClaudeCodeProjectDir,
   getPiSessionDir,
   loadRegistry,
   readClaudeCodeSession,
@@ -167,6 +168,127 @@ describe("CLI", () => {
     expect(saved).toBe(true);
   });
 
+  it("repairs Claude sessions by removing empty thinking blocks", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const claudeDir = getClaudeCodeProjectDir(projectDir, homeDir);
+    const claudePath = join(claudeDir, "session.jsonl");
+
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(
+      claudePath,
+      [
+        JSON.stringify({
+          type: "user",
+          uuid: "user-1",
+          parentUuid: null,
+          sessionId: "session-1",
+          cwd: projectDir,
+          timestamp: "2026-04-06T00:00:00.000Z",
+          message: { role: "user", content: [{ type: "text", text: "hi" }] },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "assistant-1",
+          parentUuid: "user-1",
+          sessionId: "session-1",
+          cwd: projectDir,
+          timestamp: "2026-04-06T00:00:01.000Z",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "", signature: "" },
+              { type: "text", text: "hello" },
+            ],
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const exitCode = await runCli(["repair", "--cwd", projectDir], {
+      cwd: repoRoot,
+      homeDir,
+      readFile,
+      writeFile,
+      mkdir,
+      load: () =>
+        loadRegistry(registryPath, {
+          readFile,
+        }),
+      save: async () => {},
+      stdout() {},
+    });
+
+    expect(exitCode).toBe(0);
+
+    const repaired = await readClaudeCodeSession(claudePath);
+    expect(repaired).toHaveLength(2);
+    expect(repaired[1]?.type).toBe("assistant");
+    expect(repaired[1]?.message.content).toEqual([
+      { type: "text", text: "hello" },
+    ]);
+  });
+
+  it("repairs Claude sessions by stripping invalid thinking signatures", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const claudeDir = getClaudeCodeProjectDir(projectDir, homeDir);
+    const claudePath = join(claudeDir, "session.jsonl");
+
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(
+      claudePath,
+      [
+        JSON.stringify({
+          type: "user",
+          uuid: "user-1",
+          parentUuid: null,
+          sessionId: "session-1",
+          cwd: projectDir,
+          timestamp: "2026-04-06T00:00:00.000Z",
+          message: { role: "user", content: [{ type: "text", text: "hi" }] },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "assistant-1",
+          parentUuid: "user-1",
+          sessionId: "session-1",
+          cwd: projectDir,
+          timestamp: "2026-04-06T00:00:01.000Z",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "reasoning", signature: "" },
+              { type: "text", text: "hello" },
+            ],
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const exitCode = await runCli(["repair", "--cwd", projectDir], {
+      cwd: repoRoot,
+      homeDir,
+      readFile,
+      writeFile,
+      mkdir,
+      load: () =>
+        loadRegistry(registryPath, {
+          readFile,
+        }),
+      save: async () => {},
+      stdout() {},
+    });
+
+    expect(exitCode).toBe(0);
+
+    const repaired = await readClaudeCodeSession(claudePath);
+    expect(repaired[1]?.message.content).toEqual([
+      { type: "thinking", thinking: "reasoning" },
+      { type: "text", text: "hello" },
+    ]);
+  });
+
   it("audits the registry as JSON", async () => {
     const lines: string[] = [];
     const exitCode = await runCli(["audit"], {
@@ -218,6 +340,157 @@ describe("CLI", () => {
       await readFile(join(homeDir, ".pi", "agent", "settings.json"), "utf8"),
     ) as { packages?: string[] };
     expect(piSettings.packages).toContain(join(repoRoot, "packages", "pi"));
+  });
+
+  it("removes stale local Pi package paths during setup", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    await mkdir(join(homeDir, ".pi", "agent"), { recursive: true });
+    await writeFile(
+      join(homeDir, ".pi", "agent", "settings.json"),
+      JSON.stringify(
+        {
+          packages: [
+            "/Users/bohdanpodvirnyi/packages/pi",
+            join(repoRoot, "packages", "pi"),
+            "npm:pi-review-loop",
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const exitCode = await runCli(["setup", "--cwd", projectDir], {
+      cwd: repoRoot,
+      homeDir,
+      readFile,
+      writeFile,
+      mkdir,
+      load: () =>
+        loadRegistry(registryPath, {
+          readFile,
+        }),
+      save: async () => {},
+      stdout() {},
+    });
+
+    expect(exitCode).toBe(0);
+
+    const piSettings = JSON.parse(
+      await readFile(join(homeDir, ".pi", "agent", "settings.json"), "utf8"),
+    ) as { packages?: string[] };
+    expect(piSettings.packages).toContain(join(repoRoot, "packages", "pi"));
+    expect(piSettings.packages).not.toContain("/Users/bohdanpodvirnyi/packages/pi");
+    expect(piSettings.packages).toContain("npm:pi-review-loop");
+  });
+
+  it("resolves the repo root from the CLI location instead of the launch cwd", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+
+    const exitCode = await runCli(["setup", "--cwd", projectDir], {
+      cwd: projectDir,
+      homeDir,
+      readFile,
+      writeFile,
+      mkdir,
+      load: () =>
+        loadRegistry(registryPath, {
+          readFile,
+        }),
+      save: async () => {},
+      stdout() {},
+    });
+
+    expect(exitCode).toBe(0);
+
+    const piSettings = JSON.parse(
+      await readFile(join(homeDir, ".pi", "agent", "settings.json"), "utf8"),
+    ) as { packages?: string[] };
+    expect(piSettings.packages).toContain(join(repoRoot, "packages", "pi"));
+    expect(piSettings.packages).not.toContain(join(projectDir, "packages", "pi"));
+  });
+
+  it("replaces stale Claude bridge hook commands during setup", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    await mkdir(join(homeDir, ".claude"), { recursive: true });
+    await writeFile(
+      join(homeDir, ".claude", "settings.json"),
+      JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              {
+                matcher: "",
+                hooks: [
+                  {
+                    type: "command",
+                    command:
+                      "node /Users/bohdanpodvirnyi/packages/claude-code/dist/claude-code/src/hook-cli.js session-start",
+                  },
+                ],
+              },
+            ],
+            Stop: [
+              {
+                matcher: "",
+                hooks: [
+                  {
+                    type: "command",
+                    command:
+                      "node /Users/bohdanpodvirnyi/packages/claude-code/dist/claude-code/src/hook-cli.js stop",
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const exitCode = await runCli(["setup", "--cwd", projectDir], {
+      cwd: repoRoot,
+      homeDir,
+      readFile,
+      writeFile,
+      mkdir,
+      load: () =>
+        loadRegistry(registryPath, {
+          readFile,
+        }),
+      save: async () => {},
+      stdout() {},
+    });
+
+    expect(exitCode).toBe(0);
+
+    const claudeSettings = JSON.parse(
+      await readFile(join(homeDir, ".claude", "settings.json"), "utf8"),
+    ) as {
+      hooks?: {
+        SessionStart?: Array<{ hooks?: Array<{ command?: string }> }>;
+        Stop?: Array<{ hooks?: Array<{ command?: string }> }>;
+      };
+    };
+
+    const sessionStartCommands =
+      claudeSettings.hooks?.SessionStart?.flatMap((entry) =>
+        (entry.hooks ?? []).map((hook) => hook.command).filter(Boolean),
+      ) ?? [];
+    const stopCommands =
+      claudeSettings.hooks?.Stop?.flatMap((entry) =>
+        (entry.hooks ?? []).map((hook) => hook.command).filter(Boolean),
+      ) ?? [];
+
+    expect(sessionStartCommands).toEqual([
+      `node ${join(repoRoot, "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} session-start`,
+    ]);
+    expect(stopCommands).toEqual([
+      `node ${join(repoRoot, "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} stop`,
+    ]);
   });
 
   it("imports the latest session into the selected target tool", async () => {

@@ -548,10 +548,6 @@ export function convertNormalizedToClaudeLine(
       continue;
     }
     if (item.type === "thinking") {
-      const thinking = item.thinking.trim();
-      if (thinking) {
-        content.push({ type: "thinking", thinking, signature: "" });
-      }
       continue;
     }
     if (item.type === "tool_call") {

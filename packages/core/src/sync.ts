@@ -212,7 +212,7 @@ function buildFallbackCodexTemplate(
       cwd,
       originator: "Agent Session Bridge",
       cli_version: "0.115.0",
-      source: "exec",
+      source: "vscode",
       model_provider: "openai",
       base_instructions: {
         text: "Imported by Agent Session Bridge.",

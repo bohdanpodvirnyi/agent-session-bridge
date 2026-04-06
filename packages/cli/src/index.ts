@@ -10,6 +10,7 @@ import {
   createDefaultConfig,
   findConversationByBridgeSessionId,
   findConversationByProjectKey,
+  getClaudeCodeProjectDir,
   getPiSessionDir,
   importLatestSessionToTarget,
   isProjectEnabled,
@@ -183,9 +184,6 @@ function resolveRepoRoot(deps: CliDeps): string {
   if (deps.repoRoot) {
     return resolve(deps.repoRoot);
   }
-  if (deps.cwd) {
-    return resolve(deps.cwd);
-  }
   let current = dirname(fileURLToPath(import.meta.url));
   while (true) {
     if (
@@ -273,8 +271,48 @@ async function ensureSymlink(
 function mergeHookArray(
   current: unknown,
   command: string,
+  predicate?: (command: string) => boolean,
 ): Array<Record<string, unknown>> {
-  const existing = Array.isArray(current) ? current : [];
+  const existing = (Array.isArray(current) ? current : [])
+    .flatMap((entry) => {
+      if (typeof entry !== "object" || entry === null) {
+        return [];
+      }
+
+      const hookEntries = Array.isArray((entry as { hooks?: unknown[] }).hooks)
+        ? ((entry as { hooks?: unknown[] }).hooks ?? [])
+        : [];
+
+      if (hookEntries.length === 0) {
+        return [entry as Record<string, unknown>];
+      }
+
+      const retainedHooks = hookEntries.filter((hook) => {
+        if (typeof hook !== "object" || hook === null) {
+          return true;
+        }
+        const hookCommand = (hook as { command?: unknown }).command;
+        return !(
+          typeof hookCommand === "string" &&
+          predicate?.(hookCommand) === true
+        );
+      });
+
+      if (retainedHooks.length === 0) {
+        return [];
+      }
+
+      return [
+        {
+          ...(entry as Record<string, unknown>),
+          hooks: retainedHooks,
+        },
+      ];
+    })
+    .filter(
+      (entry): entry is Record<string, unknown> =>
+        typeof entry === "object" && entry !== null,
+    );
   const alreadyPresent = existing.some((entry) => {
     if (typeof entry !== "object" || entry === null) {
       return false;
@@ -326,6 +364,9 @@ async function configureClaudeHooks(
     "src",
     "hook-cli.js",
   );
+  const isBridgeClaudeHook = (command: string): boolean =>
+    command.includes("packages/claude-code") &&
+    command.includes("hook-cli.js");
   let settings: Record<string, unknown> = {};
 
   try {
@@ -351,8 +392,13 @@ async function configureClaudeHooks(
   hooks.SessionStart = mergeHookArray(
     hooks.SessionStart,
     `node ${hookCliPath} session-start`,
+    isBridgeClaudeHook,
   );
-  hooks.Stop = mergeHookArray(hooks.Stop, `node ${hookCliPath} stop`);
+  hooks.Stop = mergeHookArray(
+    hooks.Stop,
+    `node ${hookCliPath} stop`,
+    isBridgeClaudeHook,
+  );
   settings.hooks = hooks;
 
   await mkdirImpl(dirname(settingsPath), { recursive: true });
@@ -434,6 +480,12 @@ async function configurePiExtension(
     "agent-session-bridge",
   );
 
+  const isCurrentPackage = (value: string) => value === packageSource;
+  const isStaleLocalPiPackage = (value: string) =>
+    value.startsWith("/") &&
+    !isCurrentPackage(value) &&
+    (value.endsWith("/packages/pi") || value.endsWith("/pi"));
+
   let settings: Record<string, unknown> = {};
 
   try {
@@ -450,7 +502,8 @@ async function configurePiExtension(
 
   const packages = Array.isArray(settings.packages)
     ? settings.packages.filter(
-        (value): value is string => typeof value === "string",
+        (value): value is string =>
+          typeof value === "string" && !isStaleLocalPiPackage(value),
       )
     : [];
 
@@ -958,6 +1011,113 @@ async function repairPiSessionsForProject(
   };
 }
 
+async function repairClaudeSessionsForProject(
+  cwd: string,
+  homeDir: string,
+  deps: Pick<CliDeps, "readFile" | "writeFile" | "mkdir" | "lstat">,
+): Promise<{
+  filesTouched: number;
+  filesScanned: number;
+  thinkingBlocksRemoved: number;
+}> {
+  const dir = getClaudeCodeProjectDir(cwd, homeDir);
+  if (!(await pathExists(dir, deps))) {
+    return {
+      filesTouched: 0,
+      filesScanned: 0,
+      thinkingBlocksRemoved: 0,
+    };
+  }
+
+  const files = (await fs.readdir(dir))
+    .filter((name) => name.endsWith(".jsonl"))
+    .sort();
+  let filesTouched = 0;
+  let thinkingBlocksRemoved = 0;
+
+  for (const name of files) {
+    const path = join(dir, name);
+    const raw = await (deps.readFile ?? fs.readFile)(path, "utf8");
+    const lines = raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    let fileTouched = false;
+
+    const sanitizedLines = lines.map((line) => {
+      if (
+        line.type !== "assistant" ||
+        typeof line.message !== "object" ||
+        line.message === null
+      ) {
+        return line;
+      }
+
+      const message = {
+        ...(line.message as Record<string, unknown>),
+      } satisfies Record<string, unknown>;
+
+      if (!Array.isArray(message.content)) {
+        return line;
+      }
+
+      const nextContent = message.content.filter((item) => {
+        if (
+          typeof item === "object" &&
+          item !== null &&
+          (item as { type?: unknown }).type === "thinking"
+        ) {
+          const thinkingValue = (item as { thinking?: unknown }).thinking;
+          if (
+            typeof thinkingValue !== "string" ||
+            thinkingValue.trim().length === 0
+          ) {
+            thinkingBlocksRemoved += 1;
+            fileTouched = true;
+            return false;
+          }
+          if ("signature" in (item as Record<string, unknown>)) {
+            delete (item as Record<string, unknown>).signature;
+            fileTouched = true;
+          }
+        }
+        return true;
+      });
+
+      if (!fileTouched) {
+        return line;
+      }
+
+      return {
+        ...line,
+        message: {
+          ...message,
+          content: nextContent,
+        },
+      };
+    });
+
+    if (!fileTouched) {
+      continue;
+    }
+
+    filesTouched += 1;
+    await (deps.mkdir ?? fs.mkdir)(dirname(path), { recursive: true });
+    await (deps.writeFile ?? fs.writeFile)(
+      path,
+      `${sanitizedLines.map((line) => JSON.stringify(line)).join("\n")}\n`,
+      "utf8",
+    );
+  }
+
+  return {
+    filesTouched,
+    filesScanned: files.length,
+    thinkingBlocksRemoved,
+  };
+}
+
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...restWithFlags] = argv;
   const rest = withoutFlags(restWithFlags);
@@ -1099,15 +1259,20 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     }
 
     if (!dryRun) {
-      const summary = await repairPiSessionsForProject(cwd, homeDir, deps);
+      const piSummary = await repairPiSessionsForProject(cwd, homeDir, deps);
+      const claudeSummary = await repairClaudeSessionsForProject(
+        cwd,
+        homeDir,
+        deps,
+      );
       if (conversation) {
         const updated = upsertConversation(
           registry,
           setRepairState(conversation, {
             status: "idle",
             reason:
-              summary.filesTouched > 0
-                ? `repaired ${summary.filesTouched} Pi session files`
+              piSummary.filesTouched > 0 || claudeSummary.filesTouched > 0
+                ? `repaired ${piSummary.filesTouched} Pi and ${claudeSummary.filesTouched} Claude session files`
                 : "repair scan found nothing to change",
             updatedAt: new Date().toISOString(),
           }),
@@ -1115,12 +1280,12 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         await deps.save(updated);
       }
       deps.stdout(
-        `repair complete: scanned ${summary.filesScanned} Pi session files, touched ${summary.filesTouched}, removed ${summary.entriesRemoved} bad title entries, patched ${summary.assistantEntriesPatched} assistant messages`,
+        `repair complete: scanned ${piSummary.filesScanned} Pi session files and ${claudeSummary.filesScanned} Claude session files, touched ${piSummary.filesTouched} Pi and ${claudeSummary.filesTouched} Claude, removed ${piSummary.entriesRemoved} bad Pi title entries, patched ${piSummary.assistantEntriesPatched} Pi assistant messages, removed ${claudeSummary.thinkingBlocksRemoved} empty Claude thinking blocks`,
       );
       return 0;
     }
 
-    deps.stdout(`repair would scan Pi sessions for ${cwd}`);
+    deps.stdout(`repair would scan Pi and Claude sessions for ${cwd}`);
     return 0;
   }
 

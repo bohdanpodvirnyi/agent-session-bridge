@@ -8,8 +8,11 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID, createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 
 import {
   convertClaudeLineToNormalized,
@@ -81,6 +84,33 @@ export interface SyncSourceSessionResult {
   registry: BridgeRegistry;
   writes: SyncWriteResult[];
   snapshot: SourceSessionSnapshot;
+}
+
+const execFile = promisify(execFileCallback);
+
+async function waitForSourceSessionFile(
+  sourcePath: string,
+  attempts = 6,
+  delayMs = 50,
+) {
+  let lastError: NodeJS.ErrnoException | null = null;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await stat(sourcePath);
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException;
+      if (nodeError.code !== "ENOENT") {
+        throw error;
+      }
+      lastError = nodeError;
+      if (attempt < attempts - 1) {
+        await delay(delayMs);
+      }
+    }
+  }
+
+  throw lastError ?? new Error(`Could not stat source session ${sourcePath}`);
 }
 
 function formatSessionStamp(date: Date): string {
@@ -195,6 +225,168 @@ async function appendJsonLines(path: string, items: unknown[]): Promise<void> {
   );
 }
 
+function extractCodexThreadTitleAndFirstUserMessage(
+  chunks: SourceMessageChunk[],
+): { title: string; firstUserMessage: string } {
+  for (const chunk of chunks) {
+    if (chunk.message.role !== "user") {
+      continue;
+    }
+
+    const text = chunk.message.content
+      .flatMap((item) => (item.type === "text" ? [item.text] : []))
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+
+    if (text.length > 0) {
+      return {
+        title: text,
+        firstUserMessage: text,
+      };
+    }
+  }
+
+  return {
+    title: "Imported session",
+    firstUserMessage: "",
+  };
+}
+
+function escapeSqlLiteral(value: string): string {
+  return value.replaceAll("'", "''");
+}
+
+async function findCodexStateDbPath(homeDir: string): Promise<string | null> {
+  const codexDir = join(homeDir, ".codex");
+  const entries = await readdir(codexDir).catch(() => []);
+  const candidates = entries
+    .filter((entry) => /^state_\d+\.sqlite$/u.test(entry))
+    .sort((left, right) => {
+      const leftNumber = Number.parseInt(left.replace(/\D+/gu, ""), 10);
+      const rightNumber = Number.parseInt(right.replace(/\D+/gu, ""), 10);
+      return rightNumber - leftNumber;
+    });
+
+  return candidates.length > 0 ? join(codexDir, candidates[0]!) : null;
+}
+
+async function getSqliteTableColumns(
+  dbPath: string,
+  tableName: string,
+): Promise<Set<string>> {
+  try {
+    const { stdout } = await execFile("sqlite3", [
+      dbPath,
+      `PRAGMA table_info(${tableName});`,
+    ]);
+
+    const columns = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => line.split("|")[1]?.trim())
+      .filter((value): value is string => Boolean(value));
+
+    return new Set(columns);
+  } catch {
+    return new Set();
+  }
+}
+
+function buildSqlAssignment(
+  column: string,
+  value: string | number,
+): { column: string; valueSql: string } {
+  return {
+    column,
+    valueSql:
+      typeof value === "number"
+        ? String(value)
+        : `'${escapeSqlLiteral(value)}'`,
+  };
+}
+
+async function upsertCodexThreadIndex(params: {
+  homeDir: string;
+  threadId: string;
+  rolloutPath: string;
+  cwd: string;
+  createdAt: string;
+  updatedAt: string;
+  title: string;
+  firstUserMessage: string;
+}) {
+  const dbPath = await findCodexStateDbPath(params.homeDir);
+  if (!dbPath) {
+    return;
+  }
+
+  const availableColumns = await getSqliteTableColumns(dbPath, "threads");
+  if (!availableColumns.has("id")) {
+    return;
+  }
+
+  const createdAtSeconds = Math.floor(Date.parse(params.createdAt) / 1000);
+  const updatedAtSeconds = Math.floor(Date.parse(params.updatedAt) / 1000);
+  const requestedAssignments = [
+    buildSqlAssignment("id", params.threadId),
+    buildSqlAssignment("rollout_path", params.rolloutPath),
+    buildSqlAssignment("created_at", createdAtSeconds),
+    buildSqlAssignment("updated_at", updatedAtSeconds),
+    buildSqlAssignment("source", "vscode"),
+    buildSqlAssignment("model_provider", "openai"),
+    buildSqlAssignment("cwd", params.cwd),
+    buildSqlAssignment("title", params.title),
+    buildSqlAssignment("sandbox_policy", "workspace-write"),
+    buildSqlAssignment("approval_mode", "never"),
+    buildSqlAssignment("tokens_used", 0),
+    buildSqlAssignment(
+      "has_user_event",
+      params.firstUserMessage.length > 0 ? 1 : 0,
+    ),
+    buildSqlAssignment("archived", 0),
+    buildSqlAssignment("cli_version", "0.115.0"),
+    buildSqlAssignment("first_user_message", params.firstUserMessage),
+    buildSqlAssignment("memory_mode", "enabled"),
+    buildSqlAssignment("model", "gpt-5.4"),
+    buildSqlAssignment("reasoning_effort", "medium"),
+  ].filter((assignment) => availableColumns.has(assignment.column));
+
+  const insertColumns = requestedAssignments.map(
+    (assignment) => assignment.column,
+  );
+  const insertValues = requestedAssignments.map(
+    (assignment) => assignment.valueSql,
+  );
+  const updateAssignments = requestedAssignments
+    .filter((assignment) => assignment.column !== "id")
+    .map((assignment) => `${assignment.column} = excluded.${assignment.column}`);
+
+  if (
+    insertColumns.length === 0 ||
+    !insertColumns.includes("rollout_path") ||
+    !insertColumns.includes("cwd")
+  ) {
+    return;
+  }
+
+  const sql = `
+INSERT INTO threads (${insertColumns.join(", ")})
+VALUES (${insertValues.join(", ")})
+ON CONFLICT(id) DO UPDATE SET
+  ${updateAssignments.join(",\n  ")};
+`;
+
+  try {
+    await execFile("sqlite3", [dbPath, sql]);
+  } catch {
+    // Resume-by-id still works from the rollout scan fallback even when the
+    // local thread index is unavailable.
+  }
+}
+
 function getPiEntryTimestamp(entry: PiSessionEntry): string | undefined {
   return entry.timestamp;
 }
@@ -281,7 +473,7 @@ export async function loadSourceSessionSnapshot(
   sourcePath: string,
   explicitSessionId?: string,
 ): Promise<SourceSessionSnapshot> {
-  const info = await stat(sourcePath);
+  const info = await waitForSourceSessionFile(sourcePath);
 
   if (sourceTool === "pi") {
     const session = await readPiSession(sourcePath);
@@ -421,6 +613,42 @@ function makeMirrorMessage(
   };
 }
 
+function getMaxSyncedSourceOffset(
+  watermarks: BridgeConversation["lastWrittenOffsets"],
+  sourceTool: ToolName,
+  sourceSessionId: string,
+  targetTool: ToolName,
+  targetSessionId: string,
+): number {
+  return watermarks.reduce((maxOffset, watermark) => {
+    if (
+      watermark.sourceTool === sourceTool &&
+      watermark.sourceSessionId === sourceSessionId &&
+      watermark.targetTool === targetTool &&
+      watermark.targetSessionId === targetSessionId
+    ) {
+      return Math.max(maxOffset, watermark.sourceOffset);
+    }
+
+    return maxOffset;
+  }, 0);
+}
+
+function isImportedMirrorChunk(params: {
+  watermarks: BridgeConversation["lastWrittenOffsets"];
+  sourceTool: ToolName;
+  sourceSessionId: string;
+  sourceOffset: number;
+}): boolean {
+  return params.watermarks.some(
+    (watermark) =>
+      watermark.targetTool === params.sourceTool &&
+      watermark.targetSessionId === params.sourceSessionId &&
+      watermark.targetOffset === params.sourceOffset &&
+      watermark.sourceTool !== params.sourceTool,
+  );
+}
+
 async function ensureTargetMirror(
   conversation: BridgeConversation,
   targetTool: ToolName,
@@ -473,10 +701,10 @@ async function appendToPiMirror(
   nextWatermarks: BridgeConversation["lastWrittenOffsets"];
   finalCount: number;
 }> {
-  let { count } = await loadTargetPiState(mirror.sessionPath);
+  let { count, lastId } = await loadTargetPiState(mirror.sessionPath);
   let nextWatermarks = watermarks;
   let appendedCount = 0;
-  let previousMirrorId: string | null = null;
+  let previousMirrorId: string | null = lastId;
 
   if (!(await exists(mirror.sessionPath))) {
     await mkdir(dirname(mirror.sessionPath), { recursive: true });
@@ -536,10 +764,10 @@ async function appendToClaudeMirror(
   nextWatermarks: BridgeConversation["lastWrittenOffsets"];
   finalCount: number;
 }> {
-  let { count } = await loadTargetClaudeState(mirror.sessionPath);
+  let { count, lastUuid } = await loadTargetClaudeState(mirror.sessionPath);
   let nextWatermarks = watermarks;
   let appendedCount = 0;
-  let previousMirrorId: string | null = null;
+  let previousMirrorId: string | null = lastUuid;
 
   await mkdir(dirname(mirror.sessionPath), { recursive: true });
 
@@ -586,6 +814,7 @@ async function appendToClaudeMirror(
 async function appendToCodexMirror(
   mirror: ToolMirror,
   cwd: string,
+  homeDir: string,
   sourceTool: ToolName,
   sourceSessionId: string,
   chunks: SourceMessageChunk[],
@@ -666,6 +895,27 @@ async function appendToCodexMirror(
     nextWatermarks = applySyncDecision(nextWatermarks, decision);
   }
 
+  if (hasMeta) {
+    const { title, firstUserMessage } =
+      extractCodexThreadTitleAndFirstUserMessage(chunks);
+    const createdAt =
+      chunks[0]?.message.timestamp ?? new Date().toISOString();
+    const updatedAt =
+      chunks.at(-1)?.message.timestamp ??
+      chunks[0]?.message.timestamp ??
+      new Date().toISOString();
+    await upsertCodexThreadIndex({
+      homeDir,
+      threadId: mirror.nativeId,
+      rolloutPath: mirror.sessionPath,
+      cwd,
+      createdAt,
+      updatedAt,
+      title,
+      firstUserMessage,
+    });
+  }
+
   return { appendedCount, nextWatermarks, finalCount: count };
 }
 
@@ -716,6 +966,15 @@ export async function syncSourceSessionToTargets(params: {
     typeof seededSourceOffset === "number"
       ? snapshot.chunks.filter((chunk) => chunk.sourceOffset > seededSourceOffset)
       : snapshot.chunks;
+  const authoredSourceChunks = sourceChunks.filter(
+    (chunk) =>
+      !isImportedMirrorChunk({
+        watermarks: conversation.lastWrittenOffsets,
+        sourceTool: params.sourceTool,
+        sourceSessionId: snapshot.sourceSessionId,
+        sourceOffset: chunk.sourceOffset,
+      }),
+  );
 
   conversation = attachSourceMirror(
     conversation,
@@ -745,6 +1004,17 @@ export async function syncSourceSessionToTargets(params: {
       },
     };
 
+    const targetSourceOffset = getMaxSyncedSourceOffset(
+      conversation.lastWrittenOffsets,
+      params.sourceTool,
+      snapshot.sourceSessionId,
+      targetTool,
+      mirror.nativeId,
+    );
+    const targetChunks = authoredSourceChunks.filter(
+      (chunk) => chunk.sourceOffset > targetSourceOffset,
+    );
+
     const writeResult =
       targetTool === "pi"
         ? await appendToPiMirror(
@@ -752,7 +1022,7 @@ export async function syncSourceSessionToTargets(params: {
             snapshot.cwd,
             params.sourceTool,
             snapshot.sourceSessionId,
-            sourceChunks,
+            targetChunks,
             conversation.lastWrittenOffsets,
           )
         : targetTool === "claude"
@@ -761,15 +1031,16 @@ export async function syncSourceSessionToTargets(params: {
               snapshot.cwd,
               params.sourceTool,
               snapshot.sourceSessionId,
-              sourceChunks,
+              targetChunks,
               conversation.lastWrittenOffsets,
             )
           : await appendToCodexMirror(
               mirror,
               snapshot.cwd,
+              params.homeDir,
               params.sourceTool,
               snapshot.sourceSessionId,
-              sourceChunks,
+              targetChunks,
               conversation.lastWrittenOffsets,
             );
 
