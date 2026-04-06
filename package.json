@@ -1,6 +1,6 @@
 {
   "name": "agent-session-bridge",
-  "private": true,
+  "private": false,
   "type": "module",
   "version": "0.0.0",
   "description": "Bridge local AI coding sessions between Pi, Claude Code, and Codex.",
@@ -13,6 +13,24 @@
   "bugs": {
     "url": "https://github.com/bohdanpodvirnyi/agent-session-bridge/issues"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "agent-session-bridge": "./packages/cli/dist/cli/src/index.js"
+  },
+  "files": [
+    "README.md",
+    "LICENSE",
+    "packages/cli/dist",
+    "packages/cli/package.json",
+    "packages/pi/dist",
+    "packages/pi/package.json",
+    "packages/claude-code/dist",
+    "packages/claude-code/package.json",
+    "packages/codex/dist",
+    "packages/codex/package.json"
+  ],
   "keywords": [
     "ai",
     "coding-agents",
@@ -31,6 +49,7 @@
     "clean": "find packages -type d -name dist -prune -exec rm -rf {} +",
     "fixture:validate": "vitest run packages/core/test/parsers.test.ts",
     "lint": "eslint .",
+    "prepack": "pnpm build",
     "format": "prettier --check .",
     "release:check": "pnpm lint && pnpm test && pnpm typecheck",
     "test:real-agents": "REAL_AGENT_E2E=1 vitest run packages/core/test/e2e-real-commands.test.ts",

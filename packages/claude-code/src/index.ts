@@ -14,7 +14,7 @@ import {
   type ClaudeCodeLine,
   type SessionCandidate,
   type SyncSourceSessionResult,
-} from "agent-session-bridge-core";
+} from "../../core/src/index.js";
 
 export function handleSessionStart(
   candidates: SessionCandidate[],

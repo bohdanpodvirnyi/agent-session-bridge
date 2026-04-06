@@ -7,11 +7,11 @@ Agent Session Bridge mirrors resumable local agent sessions between Pi, Claude C
 
 ## Status
 
-This repository is public and usable today from a local checkout.
+This repository is public and npm-distribution ready.
 
 - Native format parsing, conversion, sync, registry, CLI, and repair flows are implemented.
 - The repo includes both file-level end-to-end coverage and real-command E2E coverage against the actual Pi, Claude Code, and Codex CLIs.
-- Setup currently assumes a local clone plus `pnpm build`; npm-style `npx` installation is not packaged yet.
+- The package now supports install/setup from a packaged npm artifact and writes self-contained runtime assets into `~/.agent-session-bridge/runtime`.
 - Long-lived messy sessions can still require `repair`, especially after older bridge versions.
 
 ## What It Does
@@ -34,6 +34,22 @@ The bridge is designed to:
 - `packages/daemon`: optional backfill and repair helpers
 
 ## Quick Start
+
+Published npm flow:
+
+```bash
+npx agent-session-bridge setup
+npx agent-session-bridge doctor
+```
+
+Until the first npm release is published, you can verify the exact same packaged flow locally with:
+
+```bash
+npm pack
+npx --yes --package ./agent-session-bridge-0.0.0.tgz agent-session-bridge setup
+```
+
+Local checkout flow:
 
 ```bash
 git clone https://github.com/bohdanpodvirnyi/agent-session-bridge.git
@@ -170,7 +186,7 @@ pnpm exec prettier --check .
 
 ## Current Limitations
 
-- `setup` wires a local clone cleanly, but true npm-distributed `npx agent-session-bridge setup` is not ready yet.
+- The npm package is distribution-ready, but it still needs a first public npm release before plain `npx agent-session-bridge ...` works without a tarball or install.
 - Older imported transcripts can still need `repair` if they were created by earlier bridge versions.
 - Some imported legacy Codex tool-call history can still emit orphan-output warnings during resume.
 - Public API and package versioning are still early, so expect some installer and config changes as the project hardens.

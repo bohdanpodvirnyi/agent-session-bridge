@@ -3,7 +3,7 @@ import {
   type BackfillCandidate,
   type BackfillResult,
   type BridgeConversation,
-} from "agent-session-bridge-core";
+} from "../../core/src/index.js";
 
 export function runOneShotBackfill(
   candidates: BackfillCandidate[],

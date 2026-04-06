@@ -1,6 +1,14 @@
-import { access, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  lstat,
+  mkdir,
+  readFile,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -11,7 +19,7 @@ import {
   readClaudeCodeSession,
 } from "agent-session-bridge-core";
 
-import { runCli } from "../src/index.js";
+import { isCliEntrypoint, runCli } from "../src/index.js";
 
 const fixturesDir = join(
   import.meta.dirname,
@@ -22,6 +30,10 @@ const fixturesDir = join(
   "fixtures",
 );
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
+
+function runtimeRootFor(homeDir: string): string {
+  return join(homeDir, ".agent-session-bridge", "runtime");
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -334,12 +346,48 @@ describe("CLI", () => {
     expect(
       await exists(join(homeDir, ".agent-session-bridge", "config.json")),
     ).toBe(true);
+    expect(
+      await exists(
+        join(
+          runtimeRootFor(homeDir),
+          "packages",
+          "claude-code",
+          "dist",
+          "claude-code",
+          "src",
+          "hook-cli.js",
+        ),
+      ),
+    ).toBe(true);
     expect(lines[0]).toContain("setup");
 
     const piSettings = JSON.parse(
       await readFile(join(homeDir, ".pi", "agent", "settings.json"), "utf8"),
     ) as { packages?: string[] };
-    expect(piSettings.packages).toContain(join(repoRoot, "packages", "pi"));
+    expect(piSettings.packages).toContain(
+      join(runtimeRootFor(homeDir), "packages", "pi"),
+    );
+  });
+
+  it("detects npm-style symlinked CLI entrypoints", async () => {
+    const rootDir = await import("node:fs/promises").then((fs) =>
+      fs.mkdtemp(join(tmpdir(), "agent-session-bridge-cli-bin-")),
+    );
+    const targetPath = join(rootDir, "target.js");
+    const shimPath = join(
+      rootDir,
+      "node_modules",
+      ".bin",
+      "agent-session-bridge",
+    );
+
+    await mkdir(join(rootDir, "node_modules", ".bin"), { recursive: true });
+    await writeFile(targetPath, "#!/usr/bin/env node\n", "utf8");
+    await symlink(targetPath, shimPath);
+
+    expect(isCliEntrypoint(shimPath, pathToFileURL(targetPath).href)).toBe(
+      true,
+    );
   });
 
   it("removes stale local Pi package paths during setup", async () => {
@@ -380,8 +428,12 @@ describe("CLI", () => {
     const piSettings = JSON.parse(
       await readFile(join(homeDir, ".pi", "agent", "settings.json"), "utf8"),
     ) as { packages?: string[] };
-    expect(piSettings.packages).toContain(join(repoRoot, "packages", "pi"));
-    expect(piSettings.packages).not.toContain("/Users/bohdanpodvirnyi/packages/pi");
+    expect(piSettings.packages).toContain(
+      join(runtimeRootFor(homeDir), "packages", "pi"),
+    );
+    expect(piSettings.packages).not.toContain(
+      "/Users/bohdanpodvirnyi/packages/pi",
+    );
     expect(piSettings.packages).toContain("npm:pi-review-loop");
   });
 
@@ -407,8 +459,12 @@ describe("CLI", () => {
     const piSettings = JSON.parse(
       await readFile(join(homeDir, ".pi", "agent", "settings.json"), "utf8"),
     ) as { packages?: string[] };
-    expect(piSettings.packages).toContain(join(repoRoot, "packages", "pi"));
-    expect(piSettings.packages).not.toContain(join(projectDir, "packages", "pi"));
+    expect(piSettings.packages).toContain(
+      join(runtimeRootFor(homeDir), "packages", "pi"),
+    );
+    expect(piSettings.packages).not.toContain(
+      join(projectDir, "packages", "pi"),
+    );
   });
 
   it("replaces stale Claude bridge hook commands during setup", async () => {
@@ -492,14 +548,14 @@ describe("CLI", () => {
     expect(sessionStartHooks).toEqual([
       {
         type: "command",
-        command: `node ${join(repoRoot, "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} session-start`,
+        command: `node ${join(runtimeRootFor(homeDir), "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} session-start`,
         async: true,
       },
     ]);
     expect(stopHooks).toEqual([
       {
         type: "command",
-        command: `node ${join(repoRoot, "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} stop`,
+        command: `node ${join(runtimeRootFor(homeDir), "packages", "claude-code", "dist", "claude-code", "src", "hook-cli.js")} stop`,
         async: true,
       },
     ]);

@@ -1,11 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
-
 import {
   handleMessageEnd,
   restorePiBridgeState,
@@ -16,6 +11,44 @@ import {
 } from "./src/index.js";
 
 const CUSTOM_TYPE = "agent-session-bridge-state";
+
+interface PiSessionBranchEntry {
+  type: string;
+  customType?: string;
+  data?: unknown;
+}
+
+interface PiUi {
+  notify(message: string, level: "info" | "warning"): void;
+}
+
+interface PiSessionManagerLike {
+  getBranch(): PiSessionBranchEntry[];
+  getSessionFile(): string | undefined;
+  getSessionId(): string | undefined;
+}
+
+interface ExtensionContext {
+  cwd: string;
+  hasUI?: boolean;
+  ui: PiUi;
+  sessionManager: PiSessionManagerLike;
+}
+
+interface ExtensionAPI {
+  on(
+    event: string,
+    handler: (event: unknown, ctx: ExtensionContext) => void | Promise<void>,
+  ): void;
+  appendEntry(customType: string, data?: unknown): void;
+  registerCommand(
+    name: string,
+    command: {
+      description: string;
+      handler: (args: string, ctx: ExtensionContext) => void | Promise<void>;
+    },
+  ): void;
+}
 
 function isMissingSessionFileError(error: unknown): boolean {
   if (!(error instanceof Error)) {
@@ -51,7 +84,7 @@ function parseState(value: unknown): PiBridgeState | null {
     typeof value.mirrorPath === "string" &&
     typeof value.updatedAt === "string"
   ) {
-    return value as PiBridgeState;
+    return value as unknown as PiBridgeState;
   }
 
   return null;

@@ -3,7 +3,7 @@
 import * as fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -25,7 +25,7 @@ import {
   type BridgeConfig,
   type BridgeRegistry,
   type ToolName,
-} from "agent-session-bridge-core";
+} from "../../core/src/index.js";
 
 export interface CliDeps {
   load(): Promise<BridgeRegistry>;
@@ -41,6 +41,7 @@ export interface CliDeps {
   unlink?: typeof fs.unlink;
   symlink?: typeof fs.symlink;
   rm?: typeof fs.rm;
+  cp?: typeof fs.cp;
 }
 
 function hasFlag(args: string[], flag: string): boolean {
@@ -180,7 +181,7 @@ async function saveBridgeConfig(
   return configPath;
 }
 
-function resolveRepoRoot(deps: CliDeps): string {
+function resolvePackageRoot(deps: CliDeps): string {
   if (deps.repoRoot) {
     return resolve(deps.repoRoot);
   }
@@ -199,6 +200,41 @@ function resolveRepoRoot(deps: CliDeps): string {
     }
     current = parent;
   }
+}
+
+function resolveRuntimeRoot(homeDir: string): string {
+  return join(homeDir, ".agent-session-bridge", "runtime");
+}
+
+function resolveRuntimePackageDir(
+  runtimeRoot: string,
+  packageName: "pi" | "claude-code" | "codex",
+): string {
+  return join(runtimeRoot, "packages", packageName);
+}
+
+function resolveClaudeHookCliPath(runtimeRoot: string): string {
+  return join(
+    resolveRuntimePackageDir(runtimeRoot, "claude-code"),
+    "dist",
+    "claude-code",
+    "src",
+    "hook-cli.js",
+  );
+}
+
+function resolveCodexHookCliPath(runtimeRoot: string): string {
+  return join(
+    resolveRuntimePackageDir(runtimeRoot, "codex"),
+    "dist",
+    "codex",
+    "src",
+    "hook-cli.js",
+  );
+}
+
+function resolvePiPackagePath(runtimeRoot: string): string {
+  return resolveRuntimePackageDir(runtimeRoot, "pi");
 }
 
 function hookCommandExists(entries: unknown, command: string): boolean {
@@ -268,6 +304,47 @@ async function ensureSymlink(
   await symlinkImpl(targetPath, linkPath, "dir");
 }
 
+async function installRuntimeBundle(
+  homeDir: string,
+  packageRoot: string,
+  deps: Pick<CliDeps, "mkdir" | "rm" | "cp" | "lstat">,
+): Promise<string> {
+  const runtimeRoot = resolveRuntimeRoot(homeDir);
+  const mkdirImpl = deps.mkdir ?? fs.mkdir;
+  const rmImpl = deps.rm ?? fs.rm;
+  const cpImpl = deps.cp ?? fs.cp;
+
+  await mkdirImpl(join(runtimeRoot, "packages"), { recursive: true });
+
+  for (const packageName of ["pi", "claude-code", "codex"] as const) {
+    const sourceDir = join(packageRoot, "packages", packageName);
+    const targetDir = join(runtimeRoot, "packages", packageName);
+    const sourcePackageJson = join(sourceDir, "package.json");
+    const sourceDistDir = join(sourceDir, "dist");
+
+    if (!(await pathExists(sourcePackageJson, deps))) {
+      throw new Error(
+        `Missing packaged asset: ${sourcePackageJson}. Run pnpm build before setup.`,
+      );
+    }
+    if (!(await pathExists(sourceDistDir, deps))) {
+      throw new Error(
+        `Missing packaged asset: ${sourceDistDir}. Run pnpm build before setup.`,
+      );
+    }
+
+    await rmImpl(targetDir, { force: true, recursive: true });
+    await mkdirImpl(targetDir, { recursive: true });
+    await cpImpl(sourcePackageJson, join(targetDir, "package.json"));
+    await cpImpl(sourceDistDir, join(targetDir, "dist"), {
+      recursive: true,
+      force: true,
+    });
+  }
+
+  return runtimeRoot;
+}
+
 function mergeHookArray(
   current: unknown,
   command: string,
@@ -294,8 +371,7 @@ function mergeHookArray(
         }
         const hookCommand = (hook as { command?: unknown }).command;
         return !(
-          typeof hookCommand === "string" &&
-          predicate?.(hookCommand) === true
+          typeof hookCommand === "string" && predicate?.(hookCommand) === true
         );
       });
 
@@ -350,25 +426,16 @@ function mergeHookArray(
 
 async function configureClaudeHooks(
   homeDir: string,
-  repoRoot: string,
+  runtimeRoot: string,
   deps: Pick<CliDeps, "readFile" | "writeFile" | "mkdir">,
 ): Promise<string> {
   const readFileImpl = deps.readFile ?? fs.readFile;
   const writeFileImpl = deps.writeFile ?? fs.writeFile;
   const mkdirImpl = deps.mkdir ?? fs.mkdir;
   const settingsPath = join(homeDir, ".claude", "settings.json");
-  const hookCliPath = join(
-    repoRoot,
-    "packages",
-    "claude-code",
-    "dist",
-    "claude-code",
-    "src",
-    "hook-cli.js",
-  );
+  const hookCliPath = resolveClaudeHookCliPath(runtimeRoot);
   const isBridgeClaudeHook = (command: string): boolean =>
-    command.includes("packages/claude-code") &&
-    command.includes("hook-cli.js");
+    command.includes("packages/claude-code") && command.includes("hook-cli.js");
   let settings: Record<string, unknown> = {};
 
   try {
@@ -417,21 +484,13 @@ async function configureClaudeHooks(
 
 async function configureCodexHooks(
   homeDir: string,
-  repoRoot: string,
+  runtimeRoot: string,
   deps: Pick<CliDeps, "writeFile" | "mkdir">,
 ): Promise<string> {
   const writeFileImpl = deps.writeFile ?? fs.writeFile;
   const mkdirImpl = deps.mkdir ?? fs.mkdir;
   const hooksPath = join(homeDir, ".codex", "hooks.json");
-  const hookCliPath = join(
-    repoRoot,
-    "packages",
-    "codex",
-    "dist",
-    "codex",
-    "src",
-    "hook-cli.js",
-  );
+  const hookCliPath = resolveCodexHookCliPath(runtimeRoot);
 
   const hooks = {
     hooks: {
@@ -469,7 +528,7 @@ async function configureCodexHooks(
 
 async function configurePiExtension(
   homeDir: string,
-  repoRoot: string,
+  runtimeRoot: string,
   deps: Pick<CliDeps, "readFile" | "writeFile" | "mkdir" | "rm">,
 ): Promise<string> {
   const readFileImpl = deps.readFile ?? fs.readFile;
@@ -477,7 +536,7 @@ async function configurePiExtension(
   const mkdirImpl = deps.mkdir ?? fs.mkdir;
   const rmImpl = deps.rm ?? fs.rm;
   const settingsPath = join(homeDir, ".pi", "agent", "settings.json");
-  const packageSource = join(repoRoot, "packages", "pi");
+  const packageSource = resolvePiPackagePath(runtimeRoot);
   const legacyExtensionPath = join(
     homeDir,
     ".pi",
@@ -577,7 +636,7 @@ async function readHookRunState(
 
 async function inspectPiInstall(
   homeDir: string,
-  repoRoot: string,
+  runtimeRoot: string,
   deps: Pick<CliDeps, "readFile">,
 ): Promise<ToolHealth> {
   const settingsPath = join(homeDir, ".pi", "agent", "settings.json");
@@ -585,7 +644,7 @@ async function inspectPiInstall(
     settingsPath,
     deps,
   );
-  const expected = join(repoRoot, "packages", "pi");
+  const expected = resolvePiPackagePath(runtimeRoot);
   const installed = Boolean(settings?.packages?.includes(expected));
   return {
     installed,
@@ -597,7 +656,7 @@ async function inspectPiInstall(
 
 async function inspectClaudeInstall(
   homeDir: string,
-  repoRoot: string,
+  runtimeRoot: string,
   deps: Pick<CliDeps, "readFile">,
 ): Promise<ToolHealth> {
   const settingsPath = join(homeDir, ".claude", "settings.json");
@@ -609,15 +668,7 @@ async function inspectClaudeInstall(
     typeof settings?.hooks === "object" && settings?.hooks !== null
       ? (settings.hooks as Record<string, unknown>)
       : {};
-  const hookCliPath = join(
-    repoRoot,
-    "packages",
-    "claude-code",
-    "dist",
-    "claude-code",
-    "src",
-    "hook-cli.js",
-  );
+  const hookCliPath = resolveClaudeHookCliPath(runtimeRoot);
   const startInstalled = hookCommandExists(
     hooks.SessionStart,
     `node ${hookCliPath} session-start`,
@@ -637,7 +688,7 @@ async function inspectClaudeInstall(
 
 async function inspectCodexInstall(
   homeDir: string,
-  repoRoot: string,
+  runtimeRoot: string,
   deps: Pick<CliDeps, "readFile">,
 ): Promise<ToolHealth> {
   const hooksPath = join(homeDir, ".codex", "hooks.json");
@@ -649,15 +700,7 @@ async function inspectCodexInstall(
     typeof hooksFile?.hooks === "object" && hooksFile?.hooks !== null
       ? (hooksFile.hooks as Record<string, unknown>)
       : {};
-  const hookCliPath = join(
-    repoRoot,
-    "packages",
-    "codex",
-    "dist",
-    "codex",
-    "src",
-    "hook-cli.js",
-  );
+  const hookCliPath = resolveCodexHookCliPath(runtimeRoot);
   const startInstalled = hookCommandExists(
     hooks.SessionStart,
     `node ${hookCliPath} session-start`,
@@ -1133,7 +1176,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const registry = await deps.load();
   const homeDir = resolveHomeDir(deps);
   const cwd = resolveCwd(deps, restWithFlags);
-  const repoRoot = resolveRepoRoot(deps);
+  const packageRoot = resolvePackageRoot(deps);
+  const runtimeRoot = resolveRuntimeRoot(homeDir);
   const targetTools = parseTargetTools(restWithFlags);
 
   if (!command || command === "list") {
@@ -1152,10 +1196,11 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       globalMode,
     );
     if (!dryRun) {
+      await installRuntimeBundle(homeDir, packageRoot, deps);
       await saveBridgeConfig(homeDir, nextConfig, deps);
-      await configureClaudeHooks(homeDir, repoRoot, deps);
-      await configureCodexHooks(homeDir, repoRoot, deps);
-      await configurePiExtension(homeDir, repoRoot, deps);
+      await configureClaudeHooks(homeDir, runtimeRoot, deps);
+      await configureCodexHooks(homeDir, runtimeRoot, deps);
+      await configurePiExtension(homeDir, runtimeRoot, deps);
     }
 
     deps.stdout(
@@ -1163,6 +1208,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     );
     deps.stdout(`Project scope: ${globalMode ? "global" : cwd}`);
     deps.stdout(`Config: ${resolveConfigPath(homeDir)}`);
+    deps.stdout(`Runtime: ${runtimeRoot}`);
     deps.stdout(`Pi: ${join(homeDir, ".pi", "agent", "settings.json")}`);
     deps.stdout(`Claude Code: ${join(homeDir, ".claude", "settings.json")}`);
     deps.stdout(`Codex: ${join(homeDir, ".codex", "hooks.json")}`);
@@ -1192,9 +1238,9 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 
   if (command === "doctor") {
     const config = await loadExistingConfig(homeDir, deps);
-    const pi = await inspectPiInstall(homeDir, repoRoot, deps);
-    const claude = await inspectClaudeInstall(homeDir, repoRoot, deps);
-    const codex = await inspectCodexInstall(homeDir, repoRoot, deps);
+    const pi = await inspectPiInstall(homeDir, runtimeRoot, deps);
+    const claude = await inspectClaudeInstall(homeDir, runtimeRoot, deps);
+    const codex = await inspectCodexInstall(homeDir, runtimeRoot, deps);
     const claudeState = await readHookRunState(homeDir, "claude-code", deps);
     const codexState = await readHookRunState(homeDir, "codex", deps);
     const conversations = registry.conversations.filter(
@@ -1424,8 +1470,28 @@ async function main(): Promise<number> {
     },
   });
 }
-const isMain =
-  process.argv[1] != null && fileURLToPath(import.meta.url) === process.argv[1];
+
+export function isCliEntrypoint(
+  argv1: string | undefined,
+  moduleUrl: string = import.meta.url,
+): boolean {
+  if (argv1 == null) {
+    return false;
+  }
+
+  const modulePath = fileURLToPath(moduleUrl);
+  if (modulePath === argv1) {
+    return true;
+  }
+
+  try {
+    return realpathSync(modulePath) === realpathSync(argv1);
+  } catch {
+    return false;
+  }
+}
+
+const isMain = isCliEntrypoint(process.argv[1], import.meta.url);
 
 if (isMain) {
   main().then((code) => {

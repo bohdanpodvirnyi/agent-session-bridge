@@ -12,17 +12,14 @@
   "bugs": {
     "url": "https://github.com/bohdanpodvirnyi/agent-session-bridge/issues"
   },
-  "main": "./index.ts",
-  "types": "./dist/pi/src/index.d.ts",
+  "main": "./dist/pi/index.js",
+  "types": "./dist/pi/index.d.ts",
   "files": [
-    "dist",
-    "index.ts"
+    "dist"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": {
-    "agent-session-bridge-core": "workspace:*"
-  }
+  "dependencies": {}
 }

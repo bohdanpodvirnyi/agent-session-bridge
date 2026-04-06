@@ -10,7 +10,7 @@ import {
   type BridgeConversation,
   type PiSessionEntry,
   type SyncSourceSessionResult,
-} from "agent-session-bridge-core";
+} from "../../core/src/index.js";
 
 export interface PiSessionStartContext {
   bridgeConversation: BridgeConversation;
