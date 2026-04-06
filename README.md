@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/bohdanpodvirnyi/agent-session-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/bohdanpodvirnyi/agent-session-bridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![npm version](https://img.shields.io/npm/v/agent-session-bridge.svg)](https://www.npmjs.com/package/agent-session-bridge)
 
 Local-first session portability for Pi, Claude Code, and Codex.
 
@@ -42,19 +43,27 @@ The distinctive angle is `local-first durability`.
 
 ## Install
 
-Once the package is published:
+Public npm install:
 
 ```bash
 npx agent-session-bridge setup
 npx agent-session-bridge doctor
 ```
 
-Today you can already use the packaged flow from a tarball:
+Or install globally:
+
+```bash
+npm install -g agent-session-bridge
+agent-session-bridge setup
+agent-session-bridge doctor
+```
+
+Tarball flow also works if you want to test an unpublished local build:
 
 ```bash
 npm pack
-npx --yes --package ./agent-session-bridge-0.0.0.tgz agent-session-bridge setup
-npx --yes --package ./agent-session-bridge-0.0.0.tgz agent-session-bridge doctor
+npx --yes --package ./agent-session-bridge-0.1.0.tgz agent-session-bridge setup
+npx --yes --package ./agent-session-bridge-0.1.0.tgz agent-session-bridge doctor
 ```
 
 Local checkout flow:
@@ -166,7 +175,6 @@ The demo loop in [examples/flows/three-agent-loop.md](./examples/flows/three-age
 
 ## Current Limitations
 
-- The npm package is distribution-ready, but still needs its first public npm release.
 - Older imported transcripts can still need `repair` if they were created by earlier bridge versions.
 - Some legacy Codex imports can still emit orphan-output warnings during resume.
 - Public API and config shape may still evolve as the project hardens.
