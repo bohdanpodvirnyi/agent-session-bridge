@@ -113,7 +113,9 @@ function buildMessages(
   };
 }
 
-function snapshotTexts(snapshot: Awaited<ReturnType<typeof loadSourceSessionSnapshot>>) {
+function snapshotTexts(
+  snapshot: Awaited<ReturnType<typeof loadSourceSessionSnapshot>>,
+) {
   return snapshot.chunks.flatMap((chunk) =>
     chunk.message.content.flatMap((item) => {
       if (item.type === "text") {
@@ -154,8 +156,11 @@ function extractCodexTemplate(
     timestamp: _sessionTimestamp,
     ...sessionMetaTemplate
   } = sessionMeta;
-  const { type: _taskType, turn_id: _turnId, ...taskStartedTemplate } =
-    taskStarted;
+  const {
+    type: _taskType,
+    turn_id: _turnId,
+    ...taskStartedTemplate
+  } = taskStarted;
   const {
     turn_id: _turnContextId,
     cwd: _turnCwd,
@@ -180,7 +185,7 @@ async function appendJsonLines(path: string, items: unknown[]): Promise<void> {
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(
     path,
-    `${(await readFile(path, "utf8").catch(() => ""))}${items
+    `${await readFile(path, "utf8").catch(() => "")}${items
       .map((item) => JSON.stringify(item))
       .join("\n")}\n`,
     "utf8",
@@ -193,7 +198,9 @@ async function appendPiTurn(
 ): Promise<{ sessionId: string; expectedTexts: string[] }> {
   const session = await readPiSession(path);
   const lastTimestamp =
-    session.entries.at(-1)?.timestamp ?? session.header.timestamp ?? new Date().toISOString();
+    session.entries.at(-1)?.timestamp ??
+    session.header.timestamp ??
+    new Date().toISOString();
   const startedAt = new Date(lastTimestamp);
   const { user, assistant } = buildMessages(prefix, startedAt);
   const lastId = session.entries.at(-1)?.id ?? null;
@@ -234,7 +241,12 @@ async function appendClaudeTurn(
       .filter((value): value is string => Boolean(value))
       .at(-1) ?? null;
 
-  const userLine = convertNormalizedToClaudeLine(user, sessionId, lastUuid, cwd);
+  const userLine = convertNormalizedToClaudeLine(
+    user,
+    sessionId,
+    lastUuid,
+    cwd,
+  );
   const assistantLine = convertNormalizedToClaudeLine(
     assistant,
     sessionId,
@@ -422,6 +434,82 @@ const matrixCases: Array<{ sourceTool: ToolName; continueTool: ToolName }> = [
   { sourceTool: "codex", continueTool: "claude" },
 ];
 
+const multiHopSequences: ReadonlyArray<{
+  name: string;
+  sequence: ReadonlyArray<ToolName>;
+}> = [
+  {
+    name: "pi -> claude -> codex -> pi -> codex -> claude",
+    sequence: ["pi", "claude", "codex", "pi", "codex", "claude"],
+  },
+  {
+    name: "pi -> codex -> claude -> pi -> claude -> codex",
+    sequence: ["pi", "codex", "claude", "pi", "claude", "codex"],
+  },
+  {
+    name: "claude -> pi -> codex -> claude -> codex -> pi",
+    sequence: ["claude", "pi", "codex", "claude", "codex", "pi"],
+  },
+  {
+    name: "claude -> codex -> pi -> claude -> pi -> codex",
+    sequence: ["claude", "codex", "pi", "claude", "pi", "codex"],
+  },
+  {
+    name: "codex -> pi -> claude -> codex -> claude -> pi",
+    sequence: ["codex", "pi", "claude", "codex", "claude", "pi"],
+  },
+  {
+    name: "codex -> claude -> pi -> codex -> pi -> claude",
+    sequence: ["codex", "claude", "pi", "codex", "pi", "claude"],
+  },
+];
+
+async function readNativeSessionId(
+  tool: ToolName,
+  sessionPath: string,
+): Promise<string> {
+  if (tool === "pi") {
+    return (await readPiSession(sessionPath)).header.id;
+  }
+
+  if (tool === "claude") {
+    const lines = await readClaudeCodeSession(sessionPath);
+    const sessionId = lines.find(
+      (line) => typeof line.sessionId === "string",
+    )?.sessionId;
+    if (!sessionId) {
+      throw new Error(`Could not read Claude session id from ${sessionPath}`);
+    }
+    return sessionId;
+  }
+
+  const items = await readCodexRollout(sessionPath);
+  const sessionId = items.find((item) => item.type === "session_meta")?.payload
+    .id;
+  if (typeof sessionId !== "string") {
+    throw new Error(`Could not read Codex session id from ${sessionPath}`);
+  }
+  return sessionId;
+}
+
+async function assertSnapshotContainsAllTexts(
+  tool: ToolName,
+  sessionPath: string,
+  sessionId: string,
+  expectedTexts: readonly string[],
+): Promise<void> {
+  const snapshot = await loadSourceSessionSnapshot(
+    tool,
+    sessionPath,
+    sessionId,
+  );
+  const combinedText = snapshotTexts(snapshot).join("\n");
+
+  for (const expectedText of expectedTexts) {
+    expect(combinedText).toContain(expectedText);
+  }
+}
+
 describe("cross-agent matrix end to end", () => {
   it.each(matrixCases)(
     "converts $sourceTool into $continueTool, continues natively, and syncs onward",
@@ -510,6 +598,138 @@ describe("cross-agent matrix end to end", () => {
           mirror!.nativeId,
         );
         expect(mirrorSnapshot.chunks.length).toBeGreaterThan(0);
+      }
+    },
+  );
+
+  it.each(multiHopSequences)(
+    "keeps one conversation moving across $name",
+    async ({ sequence }) => {
+      const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+      const startedAt = new Date("2026-04-05T10:00:00.000Z");
+      const sourceTool = sequence[0]!;
+      const sourcePath = targetPathForSource(
+        sourceTool,
+        projectDir,
+        homeDir,
+        startedAt,
+      );
+
+      await writeAdjustedFixture(
+        sourceFixturePath(sourceTool),
+        sourcePath,
+        projectDir,
+      );
+
+      const sessionState = new Map<
+        ToolName,
+        { sessionPath: string; sessionId: string }
+      >();
+      const initialContinuation = await appendNativeTurn(
+        sourceTool,
+        sourcePath,
+        `sequence-${sequence.join("-")}-0`,
+      );
+      sessionState.set(sourceTool, {
+        sessionPath: sourcePath,
+        sessionId: initialContinuation.sessionId,
+      });
+
+      let carryTexts = [...initialContinuation.expectedTexts];
+      let timestamp = startedAt;
+
+      for (let index = 0; index < sequence.length - 1; index += 1) {
+        const currentTool = sequence[index]!;
+        const nextTool = sequence[index + 1]!;
+        const currentState = sessionState.get(currentTool)!;
+
+        const syncResult = await syncSourceSessionToTargets({
+          sourceTool: currentTool,
+          sourcePath: currentState.sessionPath,
+          sourceSessionId: currentState.sessionId,
+          registryPath,
+          homeDir,
+          now: timestamp,
+          targetTools: [nextTool],
+        });
+        timestamp = new Date(timestamp.getTime() + 5 * 60 * 1000);
+
+        const nextMirror = syncResult.writes.find(
+          (write) => write.targetTool === nextTool,
+        );
+        expect(nextMirror).toBeDefined();
+
+        const nextSessionId =
+          nextTool === "pi"
+            ? nextMirror!.targetSessionId
+            : await readNativeSessionId(nextTool, nextMirror!.sessionPath);
+
+        sessionState.set(nextTool, {
+          sessionPath: nextMirror!.sessionPath,
+          sessionId: nextSessionId,
+        });
+
+        await assertSnapshotContainsAllTexts(
+          nextTool,
+          nextMirror!.sessionPath,
+          nextSessionId,
+          carryTexts,
+        );
+
+        const continuationPrefix = `sequence-${sequence.join("-")}-${index + 1}`;
+        const continuation = await appendNativeTurn(
+          nextTool,
+          nextMirror!.sessionPath,
+          continuationPrefix,
+        );
+        sessionState.set(nextTool, {
+          sessionPath: nextMirror!.sessionPath,
+          sessionId: continuation.sessionId,
+        });
+        carryTexts = [...continuation.expectedTexts];
+      }
+
+      const finalTool = sequence.at(-1)!;
+      const finalState = sessionState.get(finalTool)!;
+      const finalSync = await syncSourceSessionToTargets({
+        sourceTool: finalTool,
+        sourcePath: finalState.sessionPath,
+        sourceSessionId: finalState.sessionId,
+        registryPath,
+        homeDir,
+        now: timestamp,
+        targetTools: toolNames.filter((tool) => tool !== finalTool),
+      });
+
+      for (const tool of toolNames) {
+        const mirror =
+          tool === finalTool
+            ? finalState
+            : finalSync.writes.find((write) => write.targetTool === tool);
+        expect(mirror).toBeDefined();
+
+        const sessionPath =
+          tool === finalTool ? finalState.sessionPath : mirror!.sessionPath;
+        const sessionId =
+          tool === finalTool
+            ? finalState.sessionId
+            : tool === "pi"
+              ? mirror!.targetSessionId
+              : await readNativeSessionId(tool, mirror!.sessionPath);
+
+        await assertSnapshotContainsAllTexts(
+          tool,
+          sessionPath,
+          sessionId,
+          carryTexts,
+        );
+
+        if (tool === "pi" && sourceTool !== "pi") {
+          await assertPiSessionSafe(sessionPath);
+        }
+        if (tool === "codex") {
+          await assertCodexSessionStable(sessionPath);
+        }
       }
     },
   );

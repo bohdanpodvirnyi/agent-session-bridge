@@ -45,6 +45,7 @@ interface PairContext {
 
 const repoHome = homedir();
 const realAgentsEnabled = process.env.REAL_AGENT_E2E === "1";
+const toolNames = ["pi", "claude", "codex"] as const;
 
 const pairs = [
   ["pi", "claude"],
@@ -54,6 +55,36 @@ const pairs = [
   ["codex", "pi"],
   ["codex", "claude"],
 ] as const satisfies ReadonlyArray<readonly [ToolName, ToolName]>;
+
+const multiHopSequences: ReadonlyArray<{
+  name: string;
+  sequence: ReadonlyArray<ToolName>;
+}> = [
+  {
+    name: "pi -> claude -> codex -> pi -> codex -> claude",
+    sequence: ["pi", "claude", "codex", "pi", "codex", "claude"],
+  },
+  {
+    name: "pi -> codex -> claude -> pi -> claude -> codex",
+    sequence: ["pi", "codex", "claude", "pi", "claude", "codex"],
+  },
+  {
+    name: "claude -> pi -> codex -> claude -> codex -> pi",
+    sequence: ["claude", "pi", "codex", "claude", "codex", "pi"],
+  },
+  {
+    name: "claude -> codex -> pi -> claude -> pi -> codex",
+    sequence: ["claude", "codex", "pi", "claude", "pi", "codex"],
+  },
+  {
+    name: "codex -> pi -> claude -> codex -> claude -> pi",
+    sequence: ["codex", "pi", "claude", "codex", "claude", "pi"],
+  },
+  {
+    name: "codex -> claude -> pi -> codex -> pi -> claude",
+    sequence: ["codex", "claude", "pi", "codex", "pi", "claude"],
+  },
+];
 
 function tokenFor(source: ToolName, target: ToolName, phase: string): string {
   return `ASB_${source.toUpperCase()}_${target.toUpperCase()}_${phase}`;
@@ -511,4 +542,127 @@ describe.runIf(realAgentsEnabled)("real command end to end", () => {
       }
     }
   }, 1_200_000);
+
+  it("walks one conversation through multi-hop three-agent sequences", async () => {
+    for (const { name, sequence } of multiHopSequences) {
+      const context = await makePairContext(sequence[0]!, sequence.at(-1)!);
+      const sessionState = new Map<ToolName, ToolSessionResult>();
+      const seenTokens: string[] = [];
+
+      try {
+        for (let index = 0; index < sequence.length; index += 1) {
+          const currentTool = sequence[index]!;
+          const token = `ASB_SEQUENCE_${sequence.join("_").toUpperCase()}_${index + 1}`;
+          const prompt = `Reply with exactly ${token}`;
+          const existingState = sessionState.get(currentTool);
+
+          if (existingState) {
+            const importedTexts = await snapshotTexts(
+              currentTool,
+              existingState.sessionPath,
+            );
+            const combinedImportedText = importedTexts.join("\n");
+            for (const seenToken of seenTokens) {
+              expect(combinedImportedText).toContain(seenToken);
+            }
+          }
+
+          const result = await runToolPrompt(currentTool, {
+            cwd: context.projectDir,
+            prompt,
+            sessionId:
+              currentTool === "pi" ? undefined : existingState?.sessionId,
+            sessionPath:
+              currentTool === "pi" ? existingState?.sessionPath : undefined,
+          });
+          context.cleanupPaths.add(result.sessionPath);
+          expect(result.finalText).toContain(token);
+          sessionState.set(currentTool, result);
+          seenTokens.push(token);
+
+          const nextTool = sequence[index + 1];
+          if (!nextTool) {
+            continue;
+          }
+
+          const syncResult = await syncSourceSessionToTargets({
+            sourceTool: currentTool,
+            sourcePath: result.sessionPath,
+            sourceSessionId: result.sessionId,
+            registryPath: context.registryPath,
+            homeDir: repoHome,
+            targetTools: [nextTool],
+          });
+          for (const write of syncResult.writes) {
+            context.cleanupPaths.add(write.sessionPath);
+          }
+
+          const nextMirror = syncResult.writes.find(
+            (write) => write.targetTool === nextTool,
+          );
+          expect(nextMirror).toBeDefined();
+
+          sessionState.set(nextTool, {
+            sessionId:
+              nextTool === "pi"
+                ? nextMirror!.targetSessionId
+                : nextMirror!.targetSessionId,
+            sessionPath: nextMirror!.sessionPath,
+            finalText: "",
+            stdout: "",
+            stderr: "",
+          });
+
+          const importedTexts = await snapshotTexts(
+            nextTool,
+            nextMirror!.sessionPath,
+          );
+          const combinedImportedText = importedTexts.join("\n");
+          for (const seenToken of seenTokens) {
+            expect(combinedImportedText).toContain(seenToken);
+          }
+        }
+
+        const lastTool = sequence.at(-1)!;
+        const lastState = sessionState.get(lastTool)!;
+        const finalSync = await syncSourceSessionToTargets({
+          sourceTool: lastTool,
+          sourcePath: lastState.sessionPath,
+          sourceSessionId: lastState.sessionId,
+          registryPath: context.registryPath,
+          homeDir: repoHome,
+          targetTools: toolNames.filter((tool) => tool !== lastTool),
+        });
+        for (const write of finalSync.writes) {
+          context.cleanupPaths.add(write.sessionPath);
+        }
+
+        for (const tool of ["pi", "claude", "codex"] as const) {
+          const state = sessionState.get(tool);
+          const sessionPath =
+            tool === lastTool
+              ? lastState.sessionPath
+              : finalSync.writes.find((write) => write.targetTool === tool)
+                  ?.sessionPath;
+          expect(sessionPath).toBeDefined();
+          const texts = await snapshotTexts(tool, sessionPath!);
+          const combinedText = texts.join("\n");
+          for (const seenToken of seenTokens) {
+            expect(combinedText, name).toContain(seenToken);
+          }
+          if (state) {
+            sessionState.set(tool, {
+              ...state,
+              sessionPath: sessionPath!,
+            });
+          }
+        }
+      } finally {
+        for (const path of context.cleanupPaths) {
+          await rm(path, { force: true });
+        }
+        await rm(context.rootDir, { recursive: true, force: true });
+      }
+    }
+  }, 2_400_000);
 });

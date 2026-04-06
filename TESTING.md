@@ -22,7 +22,12 @@ pnpm lint
 pnpm format
 ```
 
-`pnpm test:real-agents` runs the heavyweight command-level E2E matrix. It creates real Pi, Claude Code, and Codex sessions, imports them through native bridge conversions, resumes the imported sessions with the real CLIs, and verifies round-trip continuation across all six ordered tool pairs. This suite expects those CLIs to be installed and authenticated on the machine running it.
+`pnpm test:real-agents` runs the heavyweight command-level E2E matrix. It creates real Pi, Claude Code, and Codex sessions, imports them through native bridge conversions, resumes the imported sessions with the real CLIs, and verifies:
+
+- round-trip continuation across all six ordered tool pairs
+- multi-hop three-agent sequences such as `pi -> claude -> codex -> pi -> codex -> claude`
+
+This suite expects those CLIs to be installed and authenticated on the machine running it.
 
 ## Regression Policy
 
