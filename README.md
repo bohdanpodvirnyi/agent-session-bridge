@@ -66,8 +66,8 @@ Tarball flow also works if you want to test an unpublished local build:
 
 ```bash
 npm pack
-npx --yes --package ./agent-session-bridge-0.1.0.tgz agent-session-bridge setup
-npx --yes --package ./agent-session-bridge-0.1.0.tgz agent-session-bridge doctor
+npx --yes --package ./agent-session-bridge-0.1.1.tgz agent-session-bridge setup
+npx --yes --package ./agent-session-bridge-0.1.1.tgz agent-session-bridge doctor
 ```
 
 Local checkout flow:
