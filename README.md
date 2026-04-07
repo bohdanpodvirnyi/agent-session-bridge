@@ -88,9 +88,9 @@ Main commands:
 
 - `setup`: install Pi, Claude Code, and Codex integration for the current repo
 - `enable`: enable sync for the current repo or globally
-- `doctor`: inspect install health, project scope, and recent hook activity
-- `repair`: repair imported Pi or Claude sessions for the current repo
-- `import`: import latest or all foreign sessions into selected target tools
+- `doctor`: read-only health check for bridge config, installed integrations, hook status, and registry links for the current repo
+- `repair`: rewrite already-existing mirrored Pi or Claude session files for the current repo when imported history needs cleanup
+- `import`: backfill foreign sessions into selected target tools with `--latest` or `--all`
 - `list`: show registry conversations
 - `audit`: dump the local bridge registry
 
@@ -103,6 +103,21 @@ agent-session-bridge doctor
 agent-session-bridge repair
 agent-session-bridge import --tool codex --all
 ```
+
+### Command Semantics
+
+- `doctor` does not import, repair, or create links.
+- `doctor` reports bridge registry conversations linked to the current repo, not the total number of raw session files on disk.
+- `repair` only cleans mirrored Pi and Claude session files that already exist for the current repo.
+- `repair` does not backfill old sessions, discover missing sessions, or create new bridge links.
+- `import --latest` imports the single best foreign-session candidate for the repo into the selected target tool.
+- `import --all` is the one-shot backfill command. It imports all foreign-session candidates for the repo into the selected target tool.
+
+Typical recovery flow:
+
+1. Run `agent-session-bridge doctor` to confirm setup, config, and hook health.
+2. Run `agent-session-bridge import --tool <target> --all` to backfill older sessions into a target tool.
+3. Run `agent-session-bridge repair` only if imported Pi or Claude transcripts need cleanup afterward.
 
 ## How It Works
 

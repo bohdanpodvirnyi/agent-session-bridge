@@ -24,9 +24,9 @@ User-facing commands:
 
 - `setup`
 - `enable`
-- `doctor`
-- `repair`
-- `import`
+- `doctor` for read-only health and registry-link inspection
+- `repair` for cleanup of already-imported Pi and Claude mirror files
+- `import` for one-shot backfill into target tools
 - `audit`
 
 This package also installs runtime assets into `~/.agent-session-bridge/runtime`.

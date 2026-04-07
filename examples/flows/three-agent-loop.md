@@ -61,5 +61,10 @@ If not, run:
 
 ```bash
 agent-session-bridge doctor
+agent-session-bridge import --tool <target> --all
 agent-session-bridge repair
 ```
+
+Use `doctor` to confirm bridge setup, config, and hook health.
+Use `import --all` to backfill missing foreign sessions into the target tool.
+Use `repair` only if an already-imported Pi or Claude transcript needs cleanup afterward.
