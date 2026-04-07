@@ -210,6 +210,33 @@ describe("converters", () => {
     });
   });
 
+  it("drops malformed undefined Codex content entries without crashing", () => {
+    const item: CodexRolloutItem = {
+      type: "response_item",
+      payload: {
+        id: "codex-image-undefined-1",
+        type: "message",
+        role: "user",
+        timestamp: "2026-04-05T10:00:00.000Z",
+        content: [
+          { type: "input_text", text: "<image>" },
+          undefined,
+          { type: "input_image", data: "abc123", mimeType: "image/png" },
+          { type: "input_text", text: "</image>" },
+          { type: "input_text", text: "real prompt" },
+        ],
+      },
+    };
+
+    expect(convertCodexItemToNormalized(item)).toMatchObject({
+      role: "user",
+      content: [
+        { type: "image", data: "abc123", mimeType: "image/png" },
+        { type: "text", text: "real prompt" },
+      ],
+    });
+  });
+
   it("converts normalized messages back to Pi, Claude, and Codex shapes", () => {
     const message: NormalizedMessage = {
       id: "message-1",

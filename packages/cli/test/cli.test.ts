@@ -659,6 +659,79 @@ describe("CLI", () => {
     expect(lines[0]).toContain("imported");
   });
 
+  it("skips malformed source session files during bulk import", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const validPiPath = join(
+      homeDir,
+      ".pi",
+      "agent",
+      "sessions",
+      "--demo-project-source--",
+      "pi-session.jsonl",
+    );
+    const malformedPiPath = join(
+      homeDir,
+      ".pi",
+      "agent",
+      "sessions",
+      "--demo-project-bad--",
+      "broken.jsonl",
+    );
+    const lines: string[] = [];
+
+    await writeAdjustedFixture(
+      join(fixturesDir, "pi-session.jsonl"),
+      validPiPath,
+      projectDir,
+    );
+    await mkdir(join(malformedPiPath, ".."), { recursive: true });
+    await writeFile(
+      malformedPiPath,
+      '{"type":"session","version":1,"id":"broken","timestamp":"2026-04-05T10:00:00.000Z","cwd":"' +
+        projectDir +
+        '"}\n{"type":"message"} trailing-json\n',
+      "utf8",
+    );
+
+    const exitCode = await runCli(
+      ["import", "--all", "--tool", "claude", "--cwd", projectDir],
+      {
+        cwd: repoRoot,
+        homeDir,
+        readFile,
+        writeFile,
+        mkdir,
+        load: () =>
+          loadRegistry(registryPath, {
+            readFile,
+          }),
+        save: async () => {},
+        stdout(line) {
+          lines.push(line);
+        },
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(lines[0]).toContain("imported");
+
+    const claudeProjectsRoot = join(homeDir, ".claude", "projects");
+    const projectDirs = await import("node:fs/promises").then((fs) =>
+      fs.readdir(claudeProjectsRoot),
+    );
+    const importedPath = join(
+      claudeProjectsRoot,
+      projectDirs[0]!,
+      (
+        await import("node:fs/promises").then((fs) =>
+          fs.readdir(join(claudeProjectsRoot, projectDirs[0]!)),
+        )
+      )[0]!,
+    );
+
+    expect((await readClaudeCodeSession(importedPath)).length).toBe(3);
+  });
+
   it("enables bridge sync for the current project without overwriting config", async () => {
     const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
     const configDir = join(homeDir, ".agent-session-bridge");

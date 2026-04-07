@@ -105,13 +105,18 @@ function stripImageWrapperText(
   content: NormalizedContent[],
 ): NormalizedContent[] {
   return content.filter((item) => {
-    if (item.type !== "text") {
+    if (item.type !== "text" || typeof item.text !== "string") {
       return true;
     }
 
     const text = item.text.trim();
     return text !== "<image>" && text !== "</image>";
   });
+}
+
+function serializeUnknownText(value: unknown): string | null {
+  const serialized = JSON.stringify(value);
+  return typeof serialized === "string" ? serialized : null;
 }
 
 function sanitizeClaudeToolIdentifier(value: string): string {
@@ -124,8 +129,13 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
     return [{ type: "text", text: item }];
   }
 
+  if (typeof item === "undefined") {
+    return [];
+  }
+
   if (typeof item !== "object" || item === null) {
-    return [{ type: "text", text: JSON.stringify(item) }];
+    const serialized = serializeUnknownText(item);
+    return serialized ? [{ type: "text", text: serialized }] : [];
   }
 
   const candidate = item as Record<string, unknown>;
@@ -200,14 +210,17 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
     candidate.type === "tool_result" &&
     typeof candidate.tool_use_id === "string"
   ) {
+    const output = typeof candidate.content === "string"
+      ? candidate.content
+      : serializeUnknownText(candidate.content);
+    if (output === null) {
+      return [];
+    }
     return [
       {
         type: "tool_result",
         toolCallId: candidate.tool_use_id,
-        output:
-          typeof candidate.content === "string"
-            ? candidate.content
-            : JSON.stringify(candidate.content),
+        output,
         isError: Boolean(candidate.is_error),
       },
     ];
@@ -217,14 +230,17 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
     candidate.type === "function_call_output" &&
     typeof candidate.call_id === "string"
   ) {
+    const output = typeof candidate.output === "string"
+      ? candidate.output
+      : serializeUnknownText(candidate.output);
+    if (output === null) {
+      return [];
+    }
     return [
       {
         type: "tool_result",
         toolCallId: candidate.call_id,
-        output:
-          typeof candidate.output === "string"
-            ? candidate.output
-            : JSON.stringify(candidate.output),
+        output,
       },
     ];
   }
@@ -255,7 +271,8 @@ function normalizeContentItem(item: unknown): NormalizedContent[] {
     ];
   }
 
-  return [{ type: "text", text: JSON.stringify(candidate) }];
+  const serialized = serializeUnknownText(candidate);
+  return serialized ? [{ type: "text", text: serialized }] : [];
 }
 
 function normalizeContentList(content: unknown): NormalizedContent[] {

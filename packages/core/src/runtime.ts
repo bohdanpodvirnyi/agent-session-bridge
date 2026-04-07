@@ -1110,6 +1110,69 @@ async function readCandidateCwd(
   }
 }
 
+async function readSessionCandidate(
+  tool: ToolName,
+  path: string,
+  canonicalProjectKey: string,
+): Promise<SessionCandidate | null> {
+  try {
+    if (tool === "pi") {
+      const session = await readPiSession(path);
+      if (!(await belongsToProject(session.header.cwd, canonicalProjectKey))) {
+        return null;
+      }
+      return {
+        id: session.header.id,
+        path,
+        sourceTool: "pi",
+        updatedAt: session.entries.at(-1)?.timestamp ?? session.header.timestamp,
+      };
+    }
+
+    if (tool === "claude") {
+      const cwd = await readCandidateCwd("claude", path);
+      if (!cwd || !(await belongsToProject(cwd, canonicalProjectKey))) {
+        return null;
+      }
+      const lines = await readClaudeCodeSession(path);
+      return {
+        id:
+          lines.find((line) => typeof line.sessionId === "string")?.sessionId ??
+          deterministicUuid(path),
+        path,
+        sourceTool: "claude",
+        updatedAt:
+          lines
+            .map((line) => getClaudeLineTimestamp(line))
+            .filter((value): value is string => Boolean(value))
+            .at(-1) ?? new Date(0).toISOString(),
+      };
+    }
+
+    const cwd = await readCandidateCwd("codex", path);
+    if (!cwd || !(await belongsToProject(cwd, canonicalProjectKey))) {
+      return null;
+    }
+    const items = await readCodexRollout(path);
+    const meta = items.find((item) => item.type === "session_meta");
+    return {
+      id:
+        (typeof meta?.payload.id === "string"
+          ? meta.payload.id
+          : undefined) ?? deterministicUuid(path),
+      path,
+      sourceTool: "codex",
+      updatedAt:
+        items
+          .map((item) => getCodexItemTimestamp(item))
+          .filter((value): value is string => Boolean(value))
+          .at(-1) ?? new Date(0).toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function isSessionCandidate(
   candidate: SessionCandidate | null,
 ): candidate is SessionCandidate {
@@ -1143,89 +1206,15 @@ export async function listSessionCandidatesForProject(
   homeDir: string,
 ): Promise<SessionCandidate[]> {
   const canonicalProjectKey = await canonicalizeForComparison(projectKey);
-
-  if (tool === "pi") {
-    const files = await walkJsonlFiles(
-      join(homeDir, ".pi", "agent", "sessions"),
-    );
-    const candidates = (
-      await Promise.all(
-        files.map(async (path): Promise<SessionCandidate | null> => {
-          const session = await readPiSession(path);
-          if (
-            !(await belongsToProject(session.header.cwd, canonicalProjectKey))
-          ) {
-            return null;
-          }
-          return {
-            id: session.header.id,
-            path,
-            sourceTool: "pi",
-            updatedAt:
-              session.entries.at(-1)?.timestamp ?? session.header.timestamp,
-          };
-        }),
-      )
-    )
-      .filter(isSessionCandidate)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-    return candidates;
-  }
-
-  if (tool === "claude") {
-    const files = await walkJsonlFiles(join(homeDir, ".claude", "projects"));
-    const candidates = (
-      await Promise.all(
-        files.map(async (path): Promise<SessionCandidate | null> => {
-          const cwd = await readCandidateCwd("claude", path);
-          if (!cwd || !(await belongsToProject(cwd, canonicalProjectKey))) {
-            return null;
-          }
-          const lines = await readClaudeCodeSession(path);
-          return {
-            id:
-              lines.find((line) => typeof line.sessionId === "string")
-                ?.sessionId ?? deterministicUuid(path),
-            path,
-            sourceTool: "claude",
-            updatedAt:
-              lines
-                .map((line) => getClaudeLineTimestamp(line))
-                .filter((value): value is string => Boolean(value))
-                .at(-1) ?? new Date(0).toISOString(),
-          };
-        }),
-      )
-    )
-      .filter(isSessionCandidate)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-    return candidates;
-  }
-
-  const files = await walkJsonlFiles(join(homeDir, ".codex", "sessions"));
+  const files =
+    tool === "pi"
+      ? await walkJsonlFiles(join(homeDir, ".pi", "agent", "sessions"))
+      : tool === "claude"
+        ? await walkJsonlFiles(join(homeDir, ".claude", "projects"))
+        : await walkJsonlFiles(join(homeDir, ".codex", "sessions"));
   const candidates = (
     await Promise.all(
-      files.map(async (path): Promise<SessionCandidate | null> => {
-        const cwd = await readCandidateCwd("codex", path);
-        if (!cwd || !(await belongsToProject(cwd, canonicalProjectKey))) {
-          return null;
-        }
-        const items = await readCodexRollout(path);
-        const meta = items.find((item) => item.type === "session_meta");
-        return {
-          id:
-            (typeof meta?.payload.id === "string"
-              ? meta.payload.id
-              : undefined) ?? deterministicUuid(path),
-          path,
-          sourceTool: "codex",
-          updatedAt:
-            items
-              .map((item) => getCodexItemTimestamp(item))
-              .filter((value): value is string => Boolean(value))
-              .at(-1) ?? new Date(0).toISOString(),
-        };
-      }),
+      files.map((path) => readSessionCandidate(tool, path, canonicalProjectKey)),
     )
   )
     .filter(isSessionCandidate)

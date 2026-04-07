@@ -222,6 +222,46 @@ describe("runtime sync flows", () => {
     expect(piMirror.entries).toHaveLength(3);
   });
 
+  it("skips malformed foreign session files during candidate discovery", async () => {
+    const { homeDir, projectDir } = await makeTempWorkspace();
+    const piSessionsRoot = join(homeDir, ".pi", "agent", "sessions");
+    const validPiPath = join(
+      piSessionsRoot,
+      "--demo-project-source--",
+      "pi-session.jsonl",
+    );
+    const malformedPiPath = join(
+      piSessionsRoot,
+      "--demo-project-bad--",
+      "broken.jsonl",
+    );
+
+    await writeAdjustedFixture(
+      join(fixturesDir, "pi-session.jsonl"),
+      validPiPath,
+      projectDir,
+    );
+    await mkdir(join(malformedPiPath, ".."), { recursive: true });
+    await writeFile(
+      malformedPiPath,
+      '{"type":"session","version":1,"id":"broken","timestamp":"2026-04-05T10:00:00.000Z","cwd":"' +
+        projectDir +
+        '"}\n{"type":"message"} trailing-json\n',
+      "utf8",
+    );
+
+    const candidates = await listForeignSessionCandidates(
+      projectDir,
+      homeDir,
+      "claude",
+    );
+
+    expect(candidates.map((candidate) => candidate.path)).toContain(validPiPath);
+    expect(candidates.map((candidate) => candidate.path)).not.toContain(
+      malformedPiPath,
+    );
+  });
+
   it("rotates invalid Codex mirror ids to resumable thread ids", async () => {
     const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
     const piSessionPath = join(
