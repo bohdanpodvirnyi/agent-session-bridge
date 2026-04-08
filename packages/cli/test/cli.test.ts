@@ -6,6 +6,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -17,6 +18,7 @@ import {
   getPiSessionDir,
   loadRegistry,
   readClaudeCodeSession,
+  syncSourceSessionToTargets,
 } from "agent-session-bridge-core";
 
 import { isCliEntrypoint, runCli } from "../src/index.js";
@@ -299,6 +301,184 @@ describe("CLI", () => {
       { type: "thinking", thinking: "reasoning" },
       { type: "text", text: "hello" },
     ]);
+  });
+
+  it("reports Codex mirror index drift in doctor output", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const piSessionPath = join(
+      homeDir,
+      ".pi",
+      "agent",
+      "sessions",
+      "--demo-project-source--",
+      "pi-session.jsonl",
+    );
+    const codexDir = join(homeDir, ".codex");
+    const stateDbPath = join(codexDir, "state_5.sqlite");
+    const lines: string[] = [];
+
+    await mkdir(codexDir, { recursive: true });
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `
+CREATE TABLE threads (
+    id TEXT PRIMARY KEY,
+    rollout_path TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    model_provider TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    title TEXT NOT NULL,
+    sandbox_policy TEXT NOT NULL,
+    approval_mode TEXT NOT NULL,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    has_user_event INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    cli_version TEXT NOT NULL DEFAULT '',
+    first_user_message TEXT NOT NULL DEFAULT '',
+    memory_mode TEXT NOT NULL DEFAULT 'enabled'
+);
+      `,
+    ]);
+
+    await writeAdjustedFixture(
+      join(fixturesDir, "pi-session.jsonl"),
+      piSessionPath,
+      projectDir,
+    );
+    const syncResult = await syncSourceSessionToTargets({
+      sourceTool: "pi",
+      sourcePath: piSessionPath,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T10:05:00.000Z"),
+    });
+    await writeFile(
+      registryPath,
+      `${JSON.stringify(syncResult.registry, null, 2)}\n`,
+      "utf8",
+    );
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `delete from threads where id='${syncResult.conversation.mirrors.codex!.nativeId}';`,
+    ]);
+
+    const exitCode = await runCli(["doctor", "--cwd", projectDir], {
+      cwd: repoRoot,
+      homeDir,
+      readFile,
+      writeFile,
+      mkdir,
+      load: () =>
+        loadRegistry(registryPath, {
+          readFile,
+        }),
+      save: async () => {},
+      stdout(line) {
+        lines.push(line);
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(
+      lines.some(
+        (line) =>
+          line.includes("WARN codex index:") &&
+          line.includes("1 mirrors missing threads rows"),
+      ),
+    ).toBe(true);
+  });
+
+  it("reindexes missing Codex thread rows during repair", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const piSessionPath = join(
+      homeDir,
+      ".pi",
+      "agent",
+      "sessions",
+      "--demo-project-source--",
+      "pi-session.jsonl",
+    );
+    const codexDir = join(homeDir, ".codex");
+    const stateDbPath = join(codexDir, "state_5.sqlite");
+    const lines: string[] = [];
+
+    await mkdir(codexDir, { recursive: true });
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `
+CREATE TABLE threads (
+    id TEXT PRIMARY KEY,
+    rollout_path TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    model_provider TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    title TEXT NOT NULL,
+    sandbox_policy TEXT NOT NULL,
+    approval_mode TEXT NOT NULL,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    has_user_event INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    cli_version TEXT NOT NULL DEFAULT '',
+    first_user_message TEXT NOT NULL DEFAULT '',
+    memory_mode TEXT NOT NULL DEFAULT 'enabled'
+);
+      `,
+    ]);
+
+    await writeAdjustedFixture(
+      join(fixturesDir, "pi-session.jsonl"),
+      piSessionPath,
+      projectDir,
+    );
+    const syncResult = await syncSourceSessionToTargets({
+      sourceTool: "pi",
+      sourcePath: piSessionPath,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T10:05:00.000Z"),
+    });
+    await writeFile(
+      registryPath,
+      `${JSON.stringify(syncResult.registry, null, 2)}\n`,
+      "utf8",
+    );
+    const codexThreadId = syncResult.conversation.mirrors.codex!.nativeId;
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `delete from threads where id='${codexThreadId}';`,
+    ]);
+
+    const exitCode = await runCli(["repair", "--cwd", projectDir], {
+      cwd: repoRoot,
+      homeDir,
+      readFile,
+      writeFile,
+      mkdir,
+      load: () =>
+        loadRegistry(registryPath, {
+          readFile,
+        }),
+      save: async () => {},
+      stdout(line) {
+        lines.push(line);
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    const indexedRow = execFileSync("sqlite3", [
+      stateDbPath,
+      `select id || '|' || title from threads where id='${codexThreadId}';`,
+    ])
+      .toString()
+      .trim();
+    expect(indexedRow).toContain(codexThreadId);
+    expect(lines.some((line) => line.includes("reindexed 1 Codex mirrors"))).toBe(
+      true,
+    );
   });
 
   it("audits the registry as JSON", async () => {

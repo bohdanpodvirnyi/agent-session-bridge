@@ -86,6 +86,17 @@ export interface SyncSourceSessionResult {
   snapshot: SourceSessionSnapshot;
 }
 
+export interface CodexThreadIndexBackfillResult {
+  threadId: string;
+  indexed: boolean;
+  reason?:
+    | "missing-db"
+    | "missing-schema"
+    | "invalid-thread-id"
+    | "missing-rollout"
+    | "missing-session-meta";
+}
+
 const execFile = promisify(execFileCallback);
 
 async function waitForSourceSessionFile(
@@ -385,6 +396,105 @@ ON CONFLICT(id) DO UPDATE SET
     // Resume-by-id still works from the rollout scan fallback even when the
     // local thread index is unavailable.
   }
+}
+
+export async function hasCodexThreadIndexEntry(
+  homeDir: string,
+  threadId: string,
+): Promise<boolean> {
+  const dbPath = await findCodexStateDbPath(homeDir);
+  if (!dbPath) {
+    return false;
+  }
+
+  try {
+    const { stdout } = await execFile("sqlite3", [
+      dbPath,
+      `SELECT 1 FROM threads WHERE id = '${escapeSqlLiteral(threadId)}' LIMIT 1;`,
+    ]);
+    return stdout.trim() === "1";
+  } catch {
+    return false;
+  }
+}
+
+export async function backfillCodexThreadIndex(params: {
+  homeDir: string;
+  threadId: string;
+  rolloutPath: string;
+  cwd?: string;
+}): Promise<CodexThreadIndexBackfillResult> {
+  const dbPath = await findCodexStateDbPath(params.homeDir);
+  if (!dbPath) {
+    return {
+      threadId: params.threadId,
+      indexed: false,
+      reason: "missing-db",
+    };
+  }
+
+  const availableColumns = await getSqliteTableColumns(dbPath, "threads");
+  if (!availableColumns.has("id")) {
+    return {
+      threadId: params.threadId,
+      indexed: false,
+      reason: "missing-schema",
+    };
+  }
+
+  if (!isCodexThreadId(params.threadId)) {
+    return {
+      threadId: params.threadId,
+      indexed: false,
+      reason: "invalid-thread-id",
+    };
+  }
+
+  if (!(await exists(params.rolloutPath))) {
+    return {
+      threadId: params.threadId,
+      indexed: false,
+      reason: "missing-rollout",
+    };
+  }
+
+  const snapshot = await loadSourceSessionSnapshot(
+    "codex",
+    params.rolloutPath,
+    params.threadId,
+  );
+  const sessionMeta = (await readCodexRollout(params.rolloutPath)).find(
+    (item) => item.type === "session_meta",
+  );
+
+  if (!sessionMeta) {
+    return {
+      threadId: params.threadId,
+      indexed: false,
+      reason: "missing-session-meta",
+    };
+  }
+
+  const { title, firstUserMessage } =
+    extractCodexThreadTitleAndFirstUserMessage(snapshot.chunks);
+  const createdAt =
+    snapshot.chunks[0]?.message.timestamp ?? snapshot.updatedAt;
+
+  await upsertCodexThreadIndex({
+    homeDir: params.homeDir,
+    threadId: params.threadId,
+    rolloutPath: params.rolloutPath,
+    cwd: params.cwd ?? snapshot.cwd,
+    createdAt,
+    updatedAt: snapshot.updatedAt,
+    title,
+    firstUserMessage,
+  });
+
+  return {
+    threadId: params.threadId,
+    indexed: await hasCodexThreadIndexEntry(params.homeDir, params.threadId),
+  };
 }
 
 function getPiEntryTimestamp(entry: PiSessionEntry): string | undefined {

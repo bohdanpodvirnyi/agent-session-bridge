@@ -2,7 +2,7 @@
   "name": "agent-session-bridge",
   "private": false,
   "type": "module",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Bridge local AI coding sessions between Pi, Claude Code, and Codex.",
   "license": "MIT",
   "repository": {

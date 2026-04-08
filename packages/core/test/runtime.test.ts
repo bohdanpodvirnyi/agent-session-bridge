@@ -7,7 +7,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 
 import {
+  backfillCodexThreadIndex,
   getClaudeCodeProjectDir,
+  hasCodexThreadIndexEntry,
   importLatestSessionToTarget,
   isCodexThreadId,
   listForeignSessionCandidates,
@@ -459,6 +461,92 @@ describe("runtime sync flows", () => {
           ),
       ),
     ).toBe(true);
+  });
+
+  it("backfills a missing Codex thread row for an existing mirrored rollout", async () => {
+    const { homeDir, projectDir, registryPath } = await makeTempWorkspace();
+    const piSessionPath = join(
+      homeDir,
+      ".pi",
+      "agent",
+      "sessions",
+      "--demo-project-source--",
+      "pi-session.jsonl",
+    );
+    const codexDir = join(homeDir, ".codex");
+    const stateDbPath = join(codexDir, "state_5.sqlite");
+
+    await mkdir(codexDir, { recursive: true });
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `
+CREATE TABLE threads (
+    id TEXT PRIMARY KEY,
+    rollout_path TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    model_provider TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    title TEXT NOT NULL,
+    sandbox_policy TEXT NOT NULL,
+    approval_mode TEXT NOT NULL,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    has_user_event INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    cli_version TEXT NOT NULL DEFAULT '',
+    first_user_message TEXT NOT NULL DEFAULT '',
+    memory_mode TEXT NOT NULL DEFAULT 'enabled'
+);
+      `,
+    ]);
+
+    await writeAdjustedFixture(
+      join(fixturesDir, "pi-session.jsonl"),
+      piSessionPath,
+      projectDir,
+    );
+
+    const result = await syncSourceSessionToTargets({
+      sourceTool: "pi",
+      sourcePath: piSessionPath,
+      registryPath,
+      homeDir,
+      now: new Date("2026-04-05T10:05:00.000Z"),
+    });
+
+    const codexMirror = result.conversation.mirrors.codex!;
+    execFileSync("sqlite3", [
+      stateDbPath,
+      `delete from threads where id='${codexMirror.nativeId}';`,
+    ]);
+
+    expect(
+      await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId),
+    ).toBe(false);
+
+    const backfilled = await backfillCodexThreadIndex({
+      homeDir,
+      threadId: codexMirror.nativeId,
+      rolloutPath: codexMirror.sessionPath,
+      cwd: projectDir,
+    });
+
+    expect(backfilled.indexed).toBe(true);
+    expect(
+      await hasCodexThreadIndexEntry(homeDir, codexMirror.nativeId),
+    ).toBe(true);
+
+    const indexedRow = execFileSync("sqlite3", [
+      stateDbPath,
+      `select id || '|' || cwd || '|' || title from threads where id='${codexMirror.nativeId}';`,
+    ])
+      .toString()
+      .trim();
+
+    expect(indexedRow).toContain(codexMirror.nativeId);
+    expect(indexedRow).toContain(projectDir);
+    expect(indexedRow).toContain("Fix auth");
   });
 
   it("anchors later Pi imports to the current Claude transcript head", async () => {

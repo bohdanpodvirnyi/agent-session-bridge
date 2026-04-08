@@ -7,6 +7,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
+  backfillCodexThreadIndex,
   createDefaultConfig,
   findConversationByBridgeSessionId,
   findConversationByProjectKey,
@@ -22,6 +23,7 @@ import {
   setRepairState,
   syncSourceSessionToTargets,
   upsertConversation,
+  hasCodexThreadIndexEntry,
   type BridgeConfig,
   type BridgeRegistry,
   type ToolName,
@@ -76,6 +78,25 @@ function resolveHomeDir(deps: CliDeps): string {
 
 function resolveCwd(deps: CliDeps, argv: string[]): string {
   return resolve(readOption(argv, "--cwd") ?? deps.cwd ?? process.cwd());
+}
+
+function resolveCwdAliases(cwd: string): string[] {
+  const values = new Set([cwd]);
+  try {
+    values.add(realpathSync(cwd));
+  } catch {}
+  return [...values];
+}
+
+function conversationMatchesProject(
+  conversation: BridgeRegistry["conversations"][number],
+  cwd: string,
+): boolean {
+  const aliases = resolveCwdAliases(cwd);
+  return aliases.some(
+    (value) =>
+      conversation.projectKey === value || conversation.canonicalCwd === value,
+  );
 }
 
 function resolveRegistryPath(homeDir: string): string {
@@ -1167,6 +1188,115 @@ async function repairClaudeSessionsForProject(
   };
 }
 
+async function inspectCodexMirrorIndexForProject(
+  cwd: string,
+  registry: BridgeRegistry,
+  homeDir: string,
+): Promise<{
+  mirrorsScanned: number;
+  missingRows: number;
+  invalidThreadIds: number;
+}> {
+  const conversations = registry.conversations.filter(
+    (conversation) => conversationMatchesProject(conversation, cwd),
+  );
+
+  let mirrorsScanned = 0;
+  let missingRows = 0;
+  let invalidThreadIds = 0;
+
+  for (const conversation of conversations) {
+    const codexMirror = conversation.mirrors.codex;
+    if (!codexMirror) {
+      continue;
+    }
+
+    mirrorsScanned += 1;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      codexMirror.nativeId,
+    )) {
+      invalidThreadIds += 1;
+      continue;
+    }
+
+    const hasRow = await hasCodexThreadIndexEntry(
+      homeDir,
+      codexMirror.nativeId,
+    );
+    if (hasRow) {
+      continue;
+    }
+    missingRows += 1;
+  }
+
+  return {
+    mirrorsScanned,
+    missingRows,
+    invalidThreadIds,
+  };
+}
+
+async function repairCodexMirrorIndexForProject(
+  cwd: string,
+  registry: BridgeRegistry,
+  homeDir: string,
+): Promise<{
+  mirrorsScanned: number;
+  rowsIndexed: number;
+  invalidThreadIds: number;
+  missingRollouts: number;
+}> {
+  const conversations = registry.conversations.filter(
+    (conversation) => conversationMatchesProject(conversation, cwd),
+  );
+
+  let mirrorsScanned = 0;
+  let rowsIndexed = 0;
+  let invalidThreadIds = 0;
+  let missingRollouts = 0;
+
+  for (const conversation of conversations) {
+    const codexMirror = conversation.mirrors.codex;
+    if (!codexMirror) {
+      continue;
+    }
+
+    mirrorsScanned += 1;
+
+    const hadRow = await hasCodexThreadIndexEntry(
+      homeDir,
+      codexMirror.nativeId,
+    );
+    const result = await backfillCodexThreadIndex({
+      homeDir,
+      threadId: codexMirror.nativeId,
+      rolloutPath: codexMirror.sessionPath,
+      cwd: conversation.canonicalCwd,
+    });
+
+    if (result.reason === "invalid-thread-id") {
+      invalidThreadIds += 1;
+      continue;
+    }
+
+    if (result.reason === "missing-rollout") {
+      missingRollouts += 1;
+      continue;
+    }
+
+    if (!hadRow && result.indexed) {
+      rowsIndexed += 1;
+    }
+  }
+
+  return {
+    mirrorsScanned,
+    rowsIndexed,
+    invalidThreadIds,
+    missingRollouts,
+  };
+}
+
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   const [command, ...restWithFlags] = argv;
   const rest = withoutFlags(restWithFlags);
@@ -1244,8 +1374,12 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     const claudeState = await readHookRunState(homeDir, "claude-code", deps);
     const codexState = await readHookRunState(homeDir, "codex", deps);
     const conversations = registry.conversations.filter(
-      (conversation) =>
-        conversation.projectKey === cwd || conversation.canonicalCwd === cwd,
+      (conversation) => conversationMatchesProject(conversation, cwd),
+    );
+    const codexIndex = await inspectCodexMirrorIndexForProject(
+      cwd,
+      registry,
+      homeDir,
     );
     const projectEnabled = isProjectEnabled(config, cwd);
 
@@ -1294,9 +1428,25 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       ),
     );
     deps.stdout(
+      formatHealthLine(
+        "codex index",
+        codexIndex.missingRows === 0 && codexIndex.invalidThreadIds === 0,
+        codexIndex.mirrorsScanned === 0
+          ? "no Codex mirrors linked to this project"
+          : codexIndex.missingRows === 0 && codexIndex.invalidThreadIds === 0
+            ? `all ${codexIndex.mirrorsScanned} Codex mirrors are visible to Codex app-server`
+            : `${codexIndex.missingRows} mirrors missing threads rows, ${codexIndex.invalidThreadIds} mirrors use legacy non-resumable ids`,
+      ),
+    );
+    deps.stdout(
       `Registry: ${conversations.length} conversation${conversations.length === 1 ? "" : "s"} linked to this project.`,
     );
-    return pi.installed && claude.installed && codex.installed && projectEnabled
+    return pi.installed &&
+      claude.installed &&
+      codex.installed &&
+      projectEnabled &&
+      codexIndex.missingRows === 0 &&
+      codexIndex.invalidThreadIds === 0
       ? 0
       : 1;
   }
@@ -1307,7 +1457,9 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
       ? findConversationByBridgeSessionId(registry, bridgeSessionId)
       : undefined;
     if (!conversation) {
-      conversation = findConversationByProjectKey(registry, cwd);
+      conversation = registry.conversations.find((item) =>
+        conversationMatchesProject(item, cwd),
+      );
     }
 
     if (!dryRun) {
@@ -1317,14 +1469,21 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         homeDir,
         deps,
       );
+      const codexSummary = await repairCodexMirrorIndexForProject(
+        cwd,
+        registry,
+        homeDir,
+      );
       if (conversation) {
         const updated = upsertConversation(
           registry,
           setRepairState(conversation, {
             status: "idle",
             reason:
-              piSummary.filesTouched > 0 || claudeSummary.filesTouched > 0
-                ? `repaired ${piSummary.filesTouched} Pi and ${claudeSummary.filesTouched} Claude session files`
+              piSummary.filesTouched > 0 ||
+              claudeSummary.filesTouched > 0 ||
+              codexSummary.rowsIndexed > 0
+                ? `repaired ${piSummary.filesTouched} Pi, ${claudeSummary.filesTouched} Claude, and reindexed ${codexSummary.rowsIndexed} Codex mirrors`
                 : "repair scan found nothing to change",
             updatedAt: new Date().toISOString(),
           }),
@@ -1332,12 +1491,14 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
         await deps.save(updated);
       }
       deps.stdout(
-        `repair complete: scanned ${piSummary.filesScanned} Pi session files and ${claudeSummary.filesScanned} Claude session files, touched ${piSummary.filesTouched} Pi and ${claudeSummary.filesTouched} Claude, removed ${piSummary.entriesRemoved} bad Pi title entries, patched ${piSummary.assistantEntriesPatched} Pi assistant messages, removed ${claudeSummary.thinkingBlocksRemoved} empty Claude thinking blocks`,
+        `repair complete: scanned ${piSummary.filesScanned} Pi session files, ${claudeSummary.filesScanned} Claude session files, and ${codexSummary.mirrorsScanned} Codex mirrors; touched ${piSummary.filesTouched} Pi and ${claudeSummary.filesTouched} Claude; reindexed ${codexSummary.rowsIndexed} Codex mirrors; removed ${piSummary.entriesRemoved} bad Pi title entries; patched ${piSummary.assistantEntriesPatched} Pi assistant messages; removed ${claudeSummary.thinkingBlocksRemoved} empty Claude thinking blocks; found ${codexSummary.invalidThreadIds} Codex mirrors with legacy non-resumable ids and ${codexSummary.missingRollouts} missing rollout files`,
       );
       return 0;
     }
 
-    deps.stdout(`repair would scan Pi and Claude sessions for ${cwd}`);
+    deps.stdout(
+      `repair would scan Pi, Claude, and Codex mirror index state for ${cwd}`,
+    );
     return 0;
   }
 
